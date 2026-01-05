@@ -7,6 +7,8 @@ import userRoutes from './routes/user.routes.js';
 import "./models/user.model.js"
 import errorHandler from './middlewares/error.middleware.js';
 import { responseMiddleware } from './middlewares/response.middleware.js';
+import swaggerUi from "swagger-ui-express";
+import { swaggerSpec } from "./utils/swagger.js";
 
 dotenv.config();
 
@@ -30,7 +32,7 @@ app.use(responseMiddleware)
 
 app.use('/api/v1/auth',authRoutes )
 app.use('/api/v1/users',userRoutes)
-
+app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 
 app.use(errorHandler);
