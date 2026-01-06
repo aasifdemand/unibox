@@ -80,7 +80,7 @@ res.ok({
 });
 
 
-export const googleCallback = (req, res) => {
+export const googleCallback =asyncHandler(async (req, res) => {
   const user = req.user;
 
   const token = genToken(user.id);
@@ -94,9 +94,9 @@ export const googleCallback = (req, res) => {
 res.redirect("/profile.html");
   // redirect back to frontend
   // res.redirect("http://localhost:5173/dashboard");
-};
+}) 
 
-export const logout = (req, res) => {
+export const logout =asyncHandler(async (req, res) => {
   res.clearCookie("access_token", {
     httpOnly: true,
     sameSite: "strict",
@@ -104,7 +104,7 @@ export const logout = (req, res) => {
   });
 
   res.ok({ message: "Logged out successfully" });
-};
+}) 
 
 
 
