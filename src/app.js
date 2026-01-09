@@ -6,6 +6,8 @@ import { swaggerSpec } from "./utils/swagger.js";
 import authRoutes from "./routes/auth.route.js";
 import userRoutes from "./routes/user.routes.js";
 import listUploadRoutes from "./routes/list-upload.route.js";
+import campaignRoutes from "./routes/campaign.route.js";
+import senderRoutes from "./routes/sender.routes.js";
 import { responseMiddleware } from "./middlewares/response.middleware.js";
 import errorHandler from "./middlewares/error.middleware.js";
 import path from "path";
@@ -43,6 +45,8 @@ app.get("/profile.html", protect, (req, res) => {
 app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/users", userRoutes);
 app.use("/api/v1/lists", listUploadRoutes)
+app.use("/api/v1/senders",senderRoutes)
+app.use("/api/v1/campaigns",campaignRoutes)
 
 // swagger
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));

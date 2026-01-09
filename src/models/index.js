@@ -1,15 +1,21 @@
 import User from "./user.model.js";
 import Sender from "./sender.model.js";
 import Campaign from "./campaign.model.js";
+import CampaignStep from "./campaign-step.model.js";
+import CampaignRecipient from "./campaign-recipient.model.js";
+import CampaignSend from "./campaign-send.model.js";
+
 import Email from "./email.model.js";
 import EmailEvent from "./email-event.model.js";
 import ReplyEvent from "./reply-event.model.js";
 import BounceEvent from "./bounce-event.model.js";
+
 import ListUploadBatch from "./list-upload-batch.model.js";
 import ListUploadRecord from "./list-upload-record.model.js";
+import GlobalEmailRegistry from "./global-email-registry.model.js";
 
 /* =========================
-   USER RELATIONSHIPS
+   USER OWNERSHIP
 ========================= */
 
 // User → Senders
@@ -29,40 +35,115 @@ User.hasMany(ListUploadBatch, { foreignKey: "userId", onDelete: "CASCADE" });
 ListUploadBatch.belongsTo(User, { foreignKey: "userId" });
 
 /* =========================
-   SENDER / CAMPAIGN
+   SENDER RELATIONSHIPS
 ========================= */
 
 // Sender → Campaigns
-Sender.hasMany(Campaign, { foreignKey: "senderId", onDelete: "RESTRICT" });
+Sender.hasMany(Campaign, {
+  foreignKey: "senderId",
+  onDelete: "RESTRICT",
+});
 Campaign.belongsTo(Sender, { foreignKey: "senderId" });
 
+// Sender → Emails
+Sender.hasMany(Email, {
+  foreignKey: "senderId",
+  onDelete: "RESTRICT",
+});
+Email.belongsTo(Sender, { foreignKey: "senderId" });
+
+// Sender → Campaign Sends (IMPORTANT for throttling & rotation)
+Sender.hasMany(CampaignSend, {
+  foreignKey: "senderId",
+  onDelete: "RESTRICT",
+});
+CampaignSend.belongsTo(Sender, {
+  foreignKey: "senderId",
+});
+
 /* =========================
-   CAMPAIGN / EMAIL
+   CAMPAIGN CORE
+========================= */
+
+// Campaign → Steps (follow-ups)
+Campaign.hasMany(CampaignStep, {
+  foreignKey: "campaignId",
+  onDelete: "CASCADE",
+});
+CampaignStep.belongsTo(Campaign, {
+  foreignKey: "campaignId",
+});
+
+// Campaign → Recipients (state machine)
+Campaign.hasMany(CampaignRecipient, {
+  foreignKey: "campaignId",
+  onDelete: "CASCADE",
+});
+CampaignRecipient.belongsTo(Campaign, {
+  foreignKey: "campaignId",
+});
+
+// Campaign → Sends (idempotency + history)
+Campaign.hasMany(CampaignSend, {
+  foreignKey: "campaignId",
+  onDelete: "CASCADE",
+});
+CampaignSend.belongsTo(Campaign, {
+  foreignKey: "campaignId",
+});
+
+/* =========================
+   CAMPAIGN RECIPIENT LINKS
+========================= */
+
+// CampaignRecipient → Sends
+CampaignRecipient.hasMany(CampaignSend, {
+  foreignKey: "recipientId",
+  onDelete: "CASCADE",
+});
+CampaignSend.belongsTo(CampaignRecipient, {
+  foreignKey: "recipientId",
+});
+
+/* =========================
+   EMAIL LIFECYCLE
 ========================= */
 
 // Campaign → Emails
-Campaign.hasMany(Email, { foreignKey: "campaignId", onDelete: "SET NULL" });
-Email.belongsTo(Campaign, { foreignKey: "campaignId" });
+Campaign.hasMany(Email, {
+  foreignKey: "campaignId",
+  onDelete: "SET NULL",
+});
+Email.belongsTo(Campaign, {
+  foreignKey: "campaignId",
+});
 
-// Sender → Emails
-Sender.hasMany(Email, { foreignKey: "senderId", onDelete: "RESTRICT" });
-Email.belongsTo(Sender, { foreignKey: "senderId" });
-
-/* =========================
-   EMAIL EVENTS
-========================= */
-
-// Email → Lifecycle Events
-Email.hasMany(EmailEvent, { foreignKey: "emailId", onDelete: "CASCADE" });
-EmailEvent.belongsTo(Email, { foreignKey: "emailId" });
+// Email → Events
+Email.hasMany(EmailEvent, {
+  foreignKey: "emailId",
+  onDelete: "CASCADE",
+});
+EmailEvent.belongsTo(Email, {
+  foreignKey: "emailId",
+});
 
 // Email → Replies
-Email.hasMany(ReplyEvent, { foreignKey: "emailId", onDelete: "CASCADE" });
-ReplyEvent.belongsTo(Email, { foreignKey: "emailId" });
+Email.hasMany(ReplyEvent, {
+  foreignKey: "emailId",
+  onDelete: "CASCADE",
+});
+ReplyEvent.belongsTo(Email, {
+  foreignKey: "emailId",
+});
 
 // Email → Bounces
-Email.hasMany(BounceEvent, { foreignKey: "emailId", onDelete: "CASCADE" });
-BounceEvent.belongsTo(Email, { foreignKey: "emailId" });
+Email.hasMany(BounceEvent, {
+  foreignKey: "emailId",
+  onDelete: "CASCADE",
+});
+BounceEvent.belongsTo(Email, {
+  foreignKey: "emailId",
+});
 
 /* =========================
    LIST UPLOAD PIPELINE
@@ -73,16 +154,33 @@ ListUploadBatch.hasMany(ListUploadRecord, {
   foreignKey: "batchId",
   onDelete: "CASCADE",
 });
-ListUploadRecord.belongsTo(ListUploadBatch, { foreignKey: "batchId" });
+ListUploadRecord.belongsTo(ListUploadBatch, {
+  foreignKey: "batchId",
+});
+
+// Campaign → Source List Batch
+Campaign.belongsTo(ListUploadBatch, {
+  foreignKey: "listBatchId",
+  onDelete: "RESTRICT",
+});
+ListUploadBatch.hasMany(Campaign, {
+  foreignKey: "listBatchId",
+});
+
+
 
 export {
   User,
   Sender,
   Campaign,
+  CampaignStep,
+  CampaignRecipient,
+  CampaignSend,
   Email,
   EmailEvent,
   ReplyEvent,
   BounceEvent,
   ListUploadBatch,
   ListUploadRecord,
+  GlobalEmailRegistry,
 };

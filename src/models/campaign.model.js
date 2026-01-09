@@ -37,11 +37,16 @@ const Campaign = sequelize.define(
     textBody: {
       type: DataTypes.TEXT,
     },
+    listBatchId: {
+      type: DataTypes.UUID,
+      allowNull: false,
+    },
 
     status: {
       type: DataTypes.ENUM(
         "draft",
         "scheduled",
+        "running",
         "sending",
         "completed",
         "paused"

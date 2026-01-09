@@ -1,7 +1,15 @@
 import { Sequelize } from "sequelize";
+import path from "path";
+import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 
-dotenv.config({path: process.cwd() + "/.env"});
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// ALWAYS load root .env
+dotenv.config({
+  path: path.resolve(__dirname, "../../.env"),
+});
 
 
 const sequelize = new Sequelize(

@@ -2,7 +2,7 @@ import { DataTypes } from "sequelize";
 import sequelize from "../config/db.js";
 
 const Sender = sequelize.define(
-  "Sender",
+  "senders",
   {
     id: {
       type: DataTypes.UUID,
@@ -10,28 +10,56 @@ const Sender = sequelize.define(
       primaryKey: true,
     },
 
+    userId: {
+      type: DataTypes.UUID,
+      allowNull: false,
+    },
+
+    
     email: {
+      type: DataTypes.STRING,
+      allowNull: false,
+      unique: true,
+    },
+
+    displayName: {
       type: DataTypes.STRING,
       allowNull: false,
     },
 
-    displayName: DataTypes.STRING,
-    domain: DataTypes.STRING,
+    domain: {
+      type: DataTypes.STRING,
+      allowNull: false,
+    },
 
-    isVerified: {
+    
+   
+
+    provider: {
+      type: DataTypes.ENUM("smtp", "gmail", "ses"),
+      defaultValue: "smtp",
+    },
+
+    smtpHost: DataTypes.STRING,
+    smtpPort: DataTypes.INTEGER,
+    smtpSecure: {
       type: DataTypes.BOOLEAN,
       defaultValue: false,
     },
 
-    verificationStatus: {
-      type: DataTypes.STRING,
-      defaultValue: "pending",
-    },
+    smtpUser: DataTypes.STRING,
+    smtpPass: DataTypes.STRING, // 🔐 encrypt later
+
+    
+    
   },
   {
     tableName: "senders",
     timestamps: true,
     paranoid: true,
+    indexes: [
+      { fields: ["email"], unique: true },
+    ],
   }
 );
 

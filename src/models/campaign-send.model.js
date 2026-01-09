@@ -1,0 +1,32 @@
+import { DataTypes } from "sequelize";
+import sequelize from "../config/db.js";
+
+const CampaignSend = sequelize.define(
+  "CampaignSend",
+  {
+    id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
+
+    campaignId: DataTypes.UUID,
+    recipientId: DataTypes.UUID,
+    step: DataTypes.INTEGER,
+
+    senderId: DataTypes.UUID,
+    emailId: DataTypes.UUID,
+
+    status: {
+      type: DataTypes.ENUM("queued", "sent", "failed"),
+      defaultValue: "queued",
+    },
+
+    sentAt: DataTypes.DATE,
+  },
+  {
+    tableName: "campaign_sends",
+    timestamps: true,
+    indexes: [
+      { unique: true, fields: ["campaignId", "recipientId", "step"] },
+    ],
+  }
+);
+
+export default CampaignSend;

@@ -12,6 +12,8 @@ async function startServer() {
     await sequelize.authenticate();
     console.log("PostgreSQL connected");
 
+    await sequelize.sync({ alter: true });
+
     
     app.listen(PORT, () => {
       console.log(`API server running on port ${PORT} ❤️‍🔥`);
