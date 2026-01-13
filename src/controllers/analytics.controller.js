@@ -19,41 +19,31 @@ export const campaignOverview = async (req, res) => {
     });
   }
 
-  const [
-    sentCount,
-    repliedCount,
-    recipientStats,
-    sendStats,
-  ] = await Promise.all([
-    CampaignSend.count({
-      where: { campaignId, status: "sent" },
-    }),
-    ReplyEvent.count({
-      include: [
-        {
-          model: Email,
-          where: { campaignId },
-          attributes: [],
-        },
-      ],
-    }),
-    CampaignRecipient.findAll({
-      where: { campaignId },
-      attributes: [
-        "status",
-        [Sequelize.fn("COUNT", "*"), "count"],
-      ],
-      group: ["status"],
-    }),
-    CampaignSend.findAll({
-      where: { campaignId },
-      attributes: [
-        "status",
-        [Sequelize.fn("COUNT", "*"), "count"],
-      ],
-      group: ["status"],
-    }),
-  ]);
+  const [sentCount, repliedCount, recipientStats, sendStats] =
+    await Promise.all([
+      CampaignSend.count({
+        where: { campaignId, status: "sent" },
+      }),
+      ReplyEvent.count({
+        include: [
+          {
+            model: Email,
+            where: { campaignId },
+            attributes: [],
+          },
+        ],
+      }),
+      CampaignRecipient.findAll({
+        where: { campaignId },
+        attributes: ["status", [Sequelize.fn("COUNT", "*"), "count"]],
+        group: ["status"],
+      }),
+      CampaignSend.findAll({
+        where: { campaignId },
+        attributes: ["status", [Sequelize.fn("COUNT", "*"), "count"]],
+        group: ["status"],
+      }),
+    ]);
 
   res.json({
     success: true,
@@ -84,10 +74,7 @@ export const campaignStepAnalytics = async (req, res) => {
     attributes: [
       "step",
       [Sequelize.fn("COUNT", Sequelize.col("CampaignSend.id")), "sent"],
-      [
-        Sequelize.fn("COUNT", Sequelize.col("Email.id")),
-        "replied",
-      ],
+      [Sequelize.fn("COUNT", Sequelize.col("Email.id")), "replied"],
     ],
     include: [
       {
@@ -122,7 +109,6 @@ export const campaignRecipientsAnalytics = async (req, res) => {
       "currentStep",
       "lastSentAt",
       "repliedAt",
-      
     ],
     order: [["createdAt", "ASC"]],
   });
@@ -144,7 +130,7 @@ export const campaignReplies = async (req, res) => {
       {
         model: Email,
         where: { campaignId },
-        attributes: ["recipientEmail", "sentAt"],
+        attributes: ["id", "recipientEmail"], // ✅ ONLY columns guaranteed to exist
       },
     ],
     order: [["receivedAt", "DESC"]],
@@ -162,20 +148,25 @@ export const campaignReplies = async (req, res) => {
 export const campaignReplyTime = async (req, res) => {
   const { campaignId } = req.params;
 
-  const results = await Email.findAll({
-    where: {
-      campaignId,
-      repliedAt: { [Op.ne]: null },
-      sentAt: { [Op.ne]: null },
-    },
+  const results = await ReplyEvent.findAll({
+    include: [
+      {
+        model: Email,
+        where: { campaignId },
+        attributes: [],
+      },
+    ],
     attributes: [
       [
         Sequelize.literal(
-          "EXTRACT(EPOCH FROM (repliedAt - sentAt))"
+          'EXTRACT(EPOCH FROM ("ReplyEvent"."receivedAt" - "Email"."createdAt"))'
         ),
         "replySeconds",
       ],
     ],
+    where: {
+      receivedAt: { [Op.ne]: null },
+    },
   });
 
   res.json({

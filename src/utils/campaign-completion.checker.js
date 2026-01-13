@@ -7,7 +7,7 @@ export async function tryCompleteCampaign(campaignId) {
     where: {
       campaignId,
       status: {
-        [Op.in]: ["pending", "active"],
+        [Op.in]: ["pending", "sent"], // ✅ ONLY VALID ENUMS
       },
     },
   });

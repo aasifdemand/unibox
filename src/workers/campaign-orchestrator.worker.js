@@ -1,3 +1,4 @@
+// src/workers/campaign-orchestrator.worker.js
 import "../models/index.js";
 
 import Campaign from "../models/campaign.model.js";
@@ -7,10 +8,11 @@ import CampaignSend from "../models/campaign-send.model.js";
 import Email from "../models/email.model.js";
 import GlobalEmailRegistry from "../models/global-email-registry.model.js";
 
-import { getChannel } from "../queues/rabbitmq.js";
+import { getChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
 import { renderTemplate } from "../utils/template-renderer.js";
 import { tryCompleteCampaign } from "../utils/campaign-completion.checker.js";
+
 import dayjs from "dayjs";
 
 /* =========================
@@ -28,14 +30,14 @@ const log = (level, message, meta = {}) =>
   );
 
 /* =========================
-   STEP 0 AUTO-BOOTSTRAP
+   ENSURE STEP 0 EXISTS
 ========================= */
 async function ensureStepZero(campaign) {
-  const step = await CampaignStep.findOne({
+  const existing = await CampaignStep.findOne({
     where: { campaignId: campaign.id, stepOrder: 0 },
   });
 
-  if (step) return step;
+  if (existing) return existing;
 
   log("INFO", "🧱 Auto-creating step 0", { campaignId: campaign.id });
 
@@ -55,7 +57,10 @@ async function ensureStepZero(campaign) {
 ========================= */
 (async () => {
   const channel = await getChannel();
+
   await channel.assertQueue(QUEUES.CAMPAIGN_SEND, { durable: true });
+  await channel.assertQueue(QUEUES.EMAIL_ROUTE, { durable: true });
+
   channel.prefetch(1);
 
   log("INFO", "🚀 Campaign Orchestrator ready");
@@ -66,22 +71,18 @@ async function ensureStepZero(campaign) {
     const { campaignId, recipientId } = JSON.parse(msg.content.toString());
 
     try {
-      const [campaign, recipient] = await Promise.all([
-        Campaign.findByPk(campaignId),
-        CampaignRecipient.findByPk(recipientId),
-      ]);
+      const campaign = await Campaign.findByPk(campaignId);
+      const recipient = await CampaignRecipient.findByPk(recipientId);
 
       /* =========================
          HARD GUARDS
       ========================= */
       if (!campaign || campaign.status !== "running") {
-        channel.ack(msg);
-        return;
+        return channel.ack(msg);
       }
 
-      if (!recipient || !["pending", "sent"].includes(recipient.status)) {
-        channel.ack(msg);
-        return;
+      if (!recipient || recipient.status !== "pending") {
+        return channel.ack(msg);
       }
 
       const step = Number.isInteger(recipient.currentStep)
@@ -92,43 +93,35 @@ async function ensureStepZero(campaign) {
         campaignId,
         recipientId,
         step,
-        email: recipient.email,
-      });
-
-      if (step === 0) {
-        await ensureStepZero(campaign);
-      }
-
-      const maxStep = await CampaignStep.max("stepOrder", {
-        where: { campaignId },
       });
 
       /* =========================
-         ALL STEPS DONE → COMPLETE
+         STEP 0 SAFETY
       ========================= */
-      if (step > maxStep) {
-        await recipient.update({
-          status: "completed",
-          nextRunAt: null,
-        });
-
-        log("INFO", "🏁 Recipient completed all steps", {
-          campaignId,
-          recipientId,
-        });
-
-        await tryCompleteCampaign(campaignId);
-        channel.ack(msg);
-        return;
+      if (step === 0) {
+        await ensureStepZero(campaign);
       }
 
       const stepConfig = await CampaignStep.findOne({
         where: { campaignId, stepOrder: step },
       });
 
+      /* =========================
+         NO MORE STEPS → COMPLETE
+      ========================= */
       if (!stepConfig) {
-        channel.ack(msg);
-        return;
+        await recipient.update({
+          status: "completed",
+          nextRunAt: null,
+        });
+
+        log("INFO", "🏁 Recipient completed campaign", {
+          campaignId,
+          recipientId,
+        });
+
+        await tryCompleteCampaign(campaignId);
+        return channel.ack(msg);
       }
 
       /* =========================
@@ -147,22 +140,12 @@ async function ensureStepZero(campaign) {
           nextRunAt: null,
         });
 
-        await tryCompleteCampaign(campaignId);
-        channel.ack(msg);
-        return;
-      }
-
-      /* =========================
-         REPLY CONDITION
-      ========================= */
-      if (stepConfig.condition === "no_reply" && recipient.repliedAt) {
-        await recipient.update({
-          currentStep: step + 1,
-          nextRunAt: new Date(),
+        log("WARN", "⛔ Email not verified — recipient stopped", {
+          recipientId,
         });
 
-        channel.ack(msg);
-        return;
+        await tryCompleteCampaign(campaignId);
+        return channel.ack(msg);
       }
 
       /* =========================
@@ -177,12 +160,11 @@ async function ensureStepZero(campaign) {
       });
 
       if (!created && send.status !== "queued") {
-        channel.ack(msg);
-        return;
+        return channel.ack(msg);
       }
 
       /* =========================
-         TEMPLATE
+         TEMPLATE RENDERING
       ========================= */
       const vars = {
         name: recipient.name || "there",
@@ -190,42 +172,46 @@ async function ensureStepZero(campaign) {
         ...(recipient.metadata || {}),
       };
 
-      const subject = renderTemplate(stepConfig.subject, vars);
-      const htmlBody = renderTemplate(stepConfig.htmlBody, vars);
-
       const email = await Email.create({
         userId: campaign.userId,
         campaignId,
-        senderId: campaign.senderId,
+        senderId: campaign.senderId, // temp, router may rotate
         recipientEmail: recipient.email,
-        metadata: { subject, htmlBody, step },
+        metadata: {
+          subject: renderTemplate(stepConfig.subject, vars),
+          htmlBody: renderTemplate(stepConfig.htmlBody, vars),
+          step,
+        },
       });
 
-      const nextRunAt = dayjs()
-        .add(stepConfig.delayMinutes || 0, "minute")
-        .toDate();
-
+      /* =========================
+         NEXT STEP SCHEDULING
+      ========================= */
       await Promise.all([
         recipient.update({
           status: "sent",
           currentStep: step + 1,
           lastSentAt: new Date(),
-          nextRunAt,
+          nextRunAt: dayjs()
+            .add(stepConfig.delayMinutes || 0, "minute")
+            .toDate(),
         }),
         send.update({ emailId: email.id }),
       ]);
 
+      /* =========================
+         ROUTE EMAIL
+      ========================= */
       channel.sendToQueue(
-        QUEUES.EMAIL_SEND,
+        QUEUES.EMAIL_ROUTE,
         Buffer.from(JSON.stringify({ emailId: email.id })),
         { persistent: true }
       );
 
-      log("INFO", "✅ Campaign email queued", {
+      log("INFO", "📨 Email routed", {
+        emailId: email.id,
         campaignId,
         recipientId,
-        step,
-        nextRunAt,
       });
 
       channel.ack(msg);

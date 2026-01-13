@@ -1,4 +1,4 @@
-import { getChannel } from "../queues/rabbitmq.js";
+import { getChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
 
 export const enqueueEmailVerification = async (batchId) => {

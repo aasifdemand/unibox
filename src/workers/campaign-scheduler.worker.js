@@ -1,19 +1,12 @@
+// src/workers/campaign-scheduler.worker.js
 import "../models/index.js";
 import Campaign from "../models/campaign.model.js";
 import CampaignRecipient from "../models/campaign-recipient.model.js";
-import { getChannel } from "../queues/rabbitmq.js";
+import { getChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
 import dayjs from "dayjs";
-import utc from "dayjs/plugin/utc.js";
-import timezone from "dayjs/plugin/timezone.js";
 import { Op } from "sequelize";
 
-dayjs.extend(utc);
-dayjs.extend(timezone);
-
-/* =========================
-   LOGGER
-========================= */
 const log = (level, message, meta = {}) =>
   console.log(
     JSON.stringify({
@@ -29,30 +22,31 @@ const log = (level, message, meta = {}) =>
   const channel = await getChannel();
   await channel.assertQueue(QUEUES.CAMPAIGN_SEND, { durable: true });
 
-  log("INFO", "🚀 Campaign Scheduler running");
+  log("INFO", "🚀 Campaign Scheduler started");
 
   setInterval(async () => {
     try {
+      log("DEBUG", "⏰ Scheduler tick");
+
       const campaigns = await Campaign.findAll({
-        where: {
-          status: { [Op.in]: ["scheduled", "running"] },
-        },
+        where: { status: { [Op.in]: ["scheduled", "running"] } },
       });
 
       for (const campaign of campaigns) {
-        const now = dayjs().tz(campaign.timezone || "UTC");
-
-        // ▶️ Promote scheduled → running
+        // ▶️ scheduled → running
         if (
           campaign.status === "scheduled" &&
-          (!campaign.scheduledAt || now.isAfter(campaign.scheduledAt))
+          (!campaign.scheduledAt || dayjs().isAfter(campaign.scheduledAt))
         ) {
-          await campaign.update({ status: "running" });
-
-          log("INFO", "▶️ Campaign started", {
-            campaignId: campaign.id,
+          await campaign.update({
+            status: "running",
+            scheduledAt: campaign.scheduledAt || new Date(),
           });
+
+          log("INFO", "▶️ Campaign started", { campaignId: campaign.id });
         }
+
+        if (campaign.status !== "running") continue;
 
         const recipients = await CampaignRecipient.findAll({
           where: {
@@ -66,32 +60,35 @@ const log = (level, message, meta = {}) =>
           limit: campaign.throttlePerMinute,
         });
 
-        for (const recipient of recipients) {
+        log("DEBUG", "📤 Recipients ready", {
+          campaignId: campaign.id,
+          count: recipients.length,
+        });
+
+        for (const r of recipients) {
           channel.sendToQueue(
             QUEUES.CAMPAIGN_SEND,
             Buffer.from(
               JSON.stringify({
                 campaignId: campaign.id,
-                recipientId: recipient.id,
-                step: recipient.currentStep || 0,
+                recipientId: r.id,
               })
             ),
             { persistent: true }
           );
 
-          await recipient.update({
+          await r.update({
             nextRunAt: dayjs().add(10, "minute").toDate(),
           });
 
-          log("DEBUG", "📤 Recipient enqueued", {
+          log("DEBUG", "➡️ Recipient enqueued", {
             campaignId: campaign.id,
-            recipientId: recipient.id,
-            step: recipient.currentStep || 0,
+            recipientId: r.id,
           });
         }
       }
     } catch (err) {
       log("ERROR", "❌ Scheduler error", { error: err.message });
     }
-  }, 60 * 1000);
+  }, 60_000);
 })();
