@@ -9,42 +9,10 @@ export const getPipeline = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // 1. One-time fix for existing typos and casing (do this BEFORE fetching stages)
-    await CrmStage.update(
-      { name: "Reply Received" },
-      { 
-        where: { 
-          userId, 
-          name: { [Op.in]: ["REPLY RECIEVED", "REPLY RECEIVED", "Reply Recieved"] } 
-        } 
-      }
-    );
-
-    let stages = await CrmStage.findAll({
+    const stages = await CrmStage.findAll({
       where: { userId },
       order: [["position", "ASC"]],
     });
-
-    // 2. Seed default stages if none exist
-    if (stages.length === 0) {
-      const defaultStages = [
-        { name: "New leads", color: "#64748b", position: 0, type: "system", replyCategory: null },
-        { name: "Contacted", color: "#4f46e5", position: 1, type: "system", replyCategory: null },
-        { name: "Replied", color: "#10b981", position: 2, type: "system", replyCategory: "replied" },
-        { name: "Interested", color: "#f59e0b", position: 3, type: "system", replyCategory: "interested" },
-        { name: "Meeting booked", color: "#a855f7", position: 4, type: "system", replyCategory: "meeting_booked" },
-        { name: "Closed", color: "#1e293b", position: 5, type: "system", replyCategory: null },
-      ];
-
-      await CrmStage.bulkCreate(
-        defaultStages.map(s => ({ ...s, userId }))
-      );
-
-      stages = await CrmStage.findAll({
-        where: { userId },
-        order: [["position", "ASC"]],
-      });
-    }
 
     // 3. Fetch leads for these stages
     const pipeline = await Promise.all(
