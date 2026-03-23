@@ -20,6 +20,7 @@ jobs:
           password: ${{ secrets.SERVER_PASSWORD }}
           script: |
             cd ${{ secrets.BACKEND_PATH }}
-            git pull origin main
+            git fetch origin main
+            git reset --hard origin/main
             npm install --production
             pm2 restart all
