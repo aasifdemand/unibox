@@ -17,6 +17,9 @@ import ListUploadRecord from "./list-upload-record.model.js";
 import GlobalEmailRegistry from "./global-email-registry.model.js";
 import SenderHealth from "./sender-health.model.js";
 import Notification from "./notification.model.js";
+import CrmStage from "./crm-stage.model.js";
+import Lead from "./lead.model.js";
+import Integration from "./integration.model.js";
 /* =====================================================
    USER OWNERSHIP
 ===================================================== */
@@ -290,6 +293,50 @@ SmtpSender.hasOne(SenderHealth, {
 SenderHealth.belongsTo(SmtpSender, {
   foreignKey: "senderId",
 });
+
+GmailSender.hasOne(SenderHealth, {
+  foreignKey: "senderId",
+  constraints: false,
+});
+
+SenderHealth.belongsTo(GmailSender, {
+  foreignKey: "senderId",
+  constraints: false,
+});
+
+OutlookSender.hasOne(SenderHealth, {
+  foreignKey: "senderId",
+  constraints: false,
+});
+
+SenderHealth.belongsTo(OutlookSender, {
+  foreignKey: "senderId",
+  constraints: false,
+});
+
+/* =====================================================
+   CRM & PIPELINE
+===================================================== */
+
+// User → CRM Stages
+User.hasMany(CrmStage, { foreignKey: "userId", onDelete: "CASCADE" });
+CrmStage.belongsTo(User, { foreignKey: "userId" });
+
+// User → Leads
+User.hasMany(Lead, { foreignKey: "userId", onDelete: "CASCADE" });
+Lead.belongsTo(User, { foreignKey: "userId" });
+
+// User → Integrations
+User.hasMany(Integration, { foreignKey: "userId", onDelete: "CASCADE" });
+Integration.belongsTo(User, { foreignKey: "userId" });
+
+// Stage → Leads
+CrmStage.hasMany(Lead, { foreignKey: "stageId", onDelete: "CASCADE" });
+Lead.belongsTo(CrmStage, { foreignKey: "stageId" });
+
+// Contact → Lead
+ListUploadRecord.hasOne(Lead, { foreignKey: "contactId", onDelete: "CASCADE" });
+Lead.belongsTo(ListUploadRecord, { foreignKey: "contactId", as: "contact" });
 /* =====================================================
    HELPER FUNCTIONS
 ===================================================== */
@@ -340,4 +387,7 @@ export {
   GlobalEmailRegistry,
   SenderHealth,
   Notification,
+  CrmStage,
+  Lead,
+  Integration,
 };

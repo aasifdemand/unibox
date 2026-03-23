@@ -14,6 +14,7 @@ import {
   setCachedData,
 } from "../utils/redis-client.js";
 import { DeliveryGuard } from "../utils/delivery-guard.js";
+import SenderHealth from "../models/sender-health.model.js";
 
 const MAILBOX_CACHE_TTL = 1800; // 30 minutes
 
@@ -339,9 +340,11 @@ export const getMailboxes = asyncHandler(async (req, res) => {
     }),
   };
 
-  const fetchGmail = type === "all" || type === "gmail";
-  const fetchOutlook = type === "all" || type === "outlook";
-  const fetchSmtp = type === "all" || type === "smtp";
+  const typeArray = type !== "all" ? type.split(",").map(t => t.trim().toLowerCase()) : [];
+
+  const fetchGmail = type === "all" || typeArray.includes("gmail");
+  const fetchOutlook = type === "all" || typeArray.includes("outlook");
+  const fetchSmtp = type === "all" || typeArray.includes("smtp");
 
   const [gmailSenders, outlookSenders, smtpSenders] = await Promise.all([
     fetchGmail
@@ -351,6 +354,7 @@ export const getMailboxes = asyncHandler(async (req, res) => {
           exclude: ["accessToken", "refreshToken", "googleProfile"],
           include: ["googleId"],
         },
+        include: [{ model: SenderHealth, required: false }],
       })
       : Promise.resolve([]),
     fetchOutlook
@@ -360,6 +364,7 @@ export const getMailboxes = asyncHandler(async (req, res) => {
           exclude: ["accessToken", "refreshToken", "microsoftProfile"],
           include: ["microsoftId"],
         },
+        include: [{ model: SenderHealth, required: false }],
       })
       : Promise.resolve([]),
     fetchSmtp
@@ -369,6 +374,7 @@ export const getMailboxes = asyncHandler(async (req, res) => {
           exclude: ["smtpPassword", "imapPassword"],
           include: ["smtpHost"],
         },
+        include: [{ model: SenderHealth, required: false }],
       })
       : Promise.resolve([]),
   ]);
@@ -386,12 +392,14 @@ export const getMailboxes = asyncHandler(async (req, res) => {
         isActive: true,
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
-        lastSyncAt: s.lastUsedAt,
+        lastSyncAt: s.lastInboxSyncAt || s.lastUsedAt,
         stats: { 
           dailySent: health.currentCount,
           dailyLimit: health.limit,
           remaining: health.remaining,
-          warmupScore: Math.round((health.limit / DeliveryGuard.LIMITS.GMAIL.max) * 100)
+          warmupScore: Math.round((health.limit / DeliveryGuard.LIMITS.GMAIL.max) * 100),
+          reputationScore: s.SenderHealth?.reputationScore || 0,
+          healthStatus: s.SenderHealth?.healthStatus || "unknown"
         },
       };
     }),
@@ -407,12 +415,14 @@ export const getMailboxes = asyncHandler(async (req, res) => {
         isActive: true,
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
-        lastSyncAt: s.lastUsedAt,
+        lastSyncAt: s.lastInboxSyncAt || s.lastUsedAt,
         stats: { 
           dailySent: health.currentCount,
           dailyLimit: health.limit,
           remaining: health.remaining,
-          warmupScore: Math.round((health.limit / DeliveryGuard.LIMITS.OUTLOOK.max) * 100)
+          warmupScore: Math.round((health.limit / DeliveryGuard.LIMITS.OUTLOOK.max) * 100),
+          reputationScore: s.SenderHealth?.reputationScore || 0,
+          healthStatus: s.SenderHealth?.healthStatus || "unknown"
         },
       };
     }),
@@ -433,7 +443,9 @@ export const getMailboxes = asyncHandler(async (req, res) => {
           dailySent: health.currentCount,
           dailyLimit: health.limit,
           remaining: health.remaining,
-          warmupScore: Math.round((health.limit / DeliveryGuard.LIMITS.SMTP.max) * 100)
+          warmupScore: Math.round((health.limit / DeliveryGuard.LIMITS.SMTP.max) * 100),
+          reputationScore: s.SenderHealth?.reputationScore || 0,
+          healthStatus: s.SenderHealth?.healthStatus || "unknown"
         },
       };
     }),

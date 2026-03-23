@@ -13,6 +13,7 @@ import sequelize from "../config/db.js";
 import { extractDomain, getEmailProvider, isValidEmail, normalizeEmail } from "../utils/email-processor.js";
 import { enqueueEmailVerification } from "../helpers/enqueue-email-verifier.js";
 import { emitToUser } from "../utils/event-broadcaster.js";
+import { enrichContact as enrichContactData } from "../services/enrichment.service.js";
 
 // Ensure uploads directory exists
 const ensureUploadsDir = async () => {
@@ -1028,8 +1029,11 @@ export const getAllUserContacts = asyncHandler(async (req, res) => {
 
   // Build where clause for global registry if filtering by status
   const registryWhere = {};
-  if (filterStatus !== "all") {
-    registryWhere.verificationStatus = filterStatus;
+  if (filterStatus && filterStatus !== "all") {
+    const statuses = filterStatus.split(',').map(s => s.trim()).filter(Boolean);
+    if (statuses.length > 0) {
+      registryWhere.verificationStatus = { [Op.in]: statuses };
+    }
   }
 
   // Find all batches belonging to this user
@@ -1114,6 +1118,67 @@ export const getAllUserContacts = asyncHandler(async (req, res) => {
         limit,
         pages: Math.ceil(count / limit),
       },
+    },
+  });
+});
+
+/**
+ * Enrich a single contact using Apollo or Leadmagic
+ * POST /api/v1/lists/contact/:contactId/enrich
+ */
+export const enrichContact = asyncHandler(async (req, res) => {
+  const { contactId } = req.params;
+  const userId = req.user.id;
+
+  const record = await ListUploadRecord.findByPk(contactId);
+  if (!record) {
+    return res.status(404).json({ success: false, message: "Contact not found" });
+  }
+
+  const email = record.normalizedEmail || record.rawEmail;
+  if (!email) {
+    return res.status(400).json({ success: false, message: "Contact has no email" });
+  }
+
+  const enriched = await enrichContactData(userId, email);
+
+  if (!enriched) {
+    return res.status(404).json({ success: false, message: "No enrichment data found for this contact." });
+  }
+
+  // Merge enriched data into existing metadata (only fill missing fields)
+  const existingMetadata = record.metadata || {};
+  const merged = {
+    ...existingMetadata,
+    // Only overwrite if currently empty/missing
+    ...(enriched.company && !existingMetadata.company ? { company: enriched.company } : {}),
+    ...(enriched.jobTitle && !existingMetadata.jobtitle && !existingMetadata.job_title ? { job_title: enriched.jobTitle } : {}),
+    ...(enriched.phone && !existingMetadata.phone ? { phone: enriched.phone } : {}),
+    ...(enriched.city && !existingMetadata.city ? { city: enriched.city } : {}),
+    ...(enriched.country && !existingMetadata.country ? { country: enriched.country } : {}),
+    ...(enriched.website && !existingMetadata.website ? { website: enriched.website } : {}),
+    ...(enriched.linkedin && !existingMetadata.linkedin ? { linkedin: enriched.linkedin } : {}),
+    _enrichedAt: new Date().toISOString(),
+    _enrichedBy: enriched.sources || enriched.source,
+  };
+
+  // Update name too if missing
+  const updates = { metadata: merged };
+  if (enriched.name && !record.name) {
+    updates.name = enriched.name;
+  }
+
+  await record.update(updates);
+
+  res.json({
+    success: true,
+    message: `Contact enriched via ${Array.isArray(enriched.sources) ? enriched.sources.join(' + ') : enriched.source}`,
+    data: {
+      id: record.id,
+      email,
+      name: updates.name || record.name,
+      metadata: merged,
+      enrichedFields: Object.keys(enriched).filter(k => !['source', 'sources'].includes(k) && enriched[k]),
     },
   });
 });

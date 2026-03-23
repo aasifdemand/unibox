@@ -83,6 +83,21 @@ const OutlookSender = sequelize.define(
       allowNull: true,
     },
 
+    lastInboxSyncAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+
+    lastSentSyncAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+
+    lastDraftsSyncAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+
     dailySentCount: {
       type: DataTypes.INTEGER,
       defaultValue: 0,

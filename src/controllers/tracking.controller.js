@@ -13,24 +13,37 @@ export const trackOpen = asyncHandler(async (req, res) => {
     // Find the email and update openedAt
     const email = await Email.findByPk(emailId);
 
-    if (email && !email.openedAt) {
-      await email.update({
-        openedAt: new Date(), // ✅ This sets openedAt
-        userAgent: req.headers["user-agent"],
-        ipAddress: req.ip,
-      });
+    if (email) {
+      // Always track the individual email event
+      if (!email.openedAt) {
+        await email.update({
+          openedAt: new Date(),
+          userAgent: req.headers["user-agent"],
+          ipAddress: req.ip,
+        });
 
-      // Also update campaign stats
-      await Campaign.increment("totalOpens", {
-        by: 1,
-        where: { id: email.campaignId },
-      });
+        // Update CampaignSend record for orchestration
+        await CampaignSend.update(
+          { openedAt: new Date() },
+          { where: { emailId: email.id } }
+        );
+      }
 
-      // Update CampaignSend record for orchestration
-      await CampaignSend.update(
-        { openedAt: new Date() },
-        { where: { emailId: email.id } }
-      );
+      // Check if this is the first open for the Recipient to keep campaign metrics unique
+      if (email.recipientId) {
+        const recipient = await CampaignRecipient.findByPk(email.recipientId);
+        if (recipient && !recipient.metadata?.opened) {
+          await recipient.update({
+            metadata: { ...recipient.metadata, opened: true, openedAt: new Date() }
+          });
+
+          // Update overall campaign stats ONLY once per recipient
+          await Campaign.increment("totalOpens", {
+            by: 1,
+            where: { id: email.campaignId },
+          });
+        }
+      }
 
       console.log(`✅ Open tracked for email ${emailId}`);
     }
@@ -77,17 +90,12 @@ export const trackClick = asyncHandler(async (req, res) => {
     const email = await Email.findByPk(emailId);
 
     if (email) {
+      // Always track the individual email click event
       await email.update({
-        clickedAt: email.clickedAt || new Date(), // ✅ This sets clickedAt
+        clickedAt: email.clickedAt || new Date(),
         clickCount: sequelize.literal("clickCount + 1"),
         userAgent: req.headers["user-agent"],
         ipAddress: req.ip,
-      });
-
-      // Also update campaign stats
-      await Campaign.increment("totalClicks", {
-        by: 1,
-        where: { id: email.campaignId },
       });
 
       // Update CampaignSend record for orchestration
@@ -95,6 +103,22 @@ export const trackClick = asyncHandler(async (req, res) => {
         { clickedAt: new Date() },
         { where: { emailId: email.id } }
       );
+
+      // Check if this is the first click for the Recipient to keep campaign metrics unique
+      if (email.recipientId) {
+        const recipient = await CampaignRecipient.findByPk(email.recipientId);
+        if (recipient && !recipient.metadata?.clicked) {
+          await recipient.update({
+            metadata: { ...recipient.metadata, clicked: true, clickedAt: new Date() }
+          });
+
+          // Update overall campaign stats ONLY once per recipient
+          await Campaign.increment("totalClicks", {
+            by: 1,
+            where: { id: email.campaignId },
+          });
+        }
+      }
 
       console.log(`✅ Click tracked for email ${emailId} to ${decodedUrl}`);
     }

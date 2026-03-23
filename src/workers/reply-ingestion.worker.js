@@ -3,7 +3,6 @@ import { initGlobalErrorHandlers } from "../utils/error-handler.js";
 initGlobalErrorHandlers();
 import axios from "axios";
 import { google } from "googleapis";
-import Imap from "imap";
 import { simpleParser } from "mailparser";
 import { Op } from "sequelize";
 
@@ -19,8 +18,10 @@ import { emitToUser } from "../utils/event-broadcaster.js";
 import { getValidMicrosoftToken } from "../utils/get-valid-microsoft-token.js";
 import { refreshGoogleToken } from "../utils/refresh-google-token.js";
 import { tryCompleteCampaign } from "../utils/campaign-completion.checker.js";
-import { getNextProxy } from "../utils/proxy-fetcher.js";
 import { createImapConnection } from "../utils/imap-helper.js";
+import { syncLead } from "../services/crm-sync.service.js";
+import { syncLeadToAllCRMs } from "../services/crm-sync.provider.js";
+import { classifyIntent } from "../services/ai.service.js";
 
 /* =========================
    LOGGER
@@ -115,6 +116,22 @@ async function processReply({ sender, email, reply }) {
       emailId: email.id,
       campaignId: email.campaignId,
     });
+
+    // 🏛️ SYNC LEAD TO CRM WITH AI INTENT DETECTION
+    const campaignData = await Campaign.findByPk(email.campaignId, { attributes: ['userId'] });
+    if (campaignData) {
+      // Use AI to classify the sentiment of the reply
+      const intent = await classifyIntent(reply.body).catch(() => "replied");
+
+      syncLead(campaignData.userId, email.recipientEmail, "replied", intent).catch(e =>
+        log("ERROR", "Failed to sync lead to CRM on reply", { error: e.message })
+      );
+
+      syncLeadToAllCRMs(campaignData.userId, email.recipientEmail, "replied", {
+        custom_intent: intent,
+        recent_reply_body: reply.bodySnipped || reply.body
+      }).catch(e => log("ERROR", "Failed to sync lead to external CRM on reply", { error: e.message }));
+    }
 
     const campaign = await Campaign.findByPk(email.campaignId, { attributes: ['userId', 'name'] });
     if (campaign) {
@@ -379,12 +396,8 @@ async function ingestImapReplies(sender) {
 
     if (!messageIdMap.size) return;
 
-    // 3️⃣ Connect to IMAP
-    const proxy = await getNextProxy();
-    if (proxy) log("INFO", "🌐 Using proxy for IMAP reply ingestion", { sender: sender.email, proxy });
-    
-    // Switch to helper for consistent proxy support
-    const imap = await createImapConnection(sender, proxy);
+    // 3️⃣ Connect to IMAP (direct connection, no proxy)
+    const imap = await createImapConnection(sender, null);
 
     return new Promise((resolve) => {
       imap.once("ready", () => {

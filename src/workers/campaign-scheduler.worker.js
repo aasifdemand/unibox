@@ -44,10 +44,41 @@ const log = (level, message, meta = {}) =>
       for (const campaign of campaigns) {
         // ... (campaign status update logic remains same)
         if (campaign.status === "scheduled" && (!campaign.scheduledAt || dayjs.utc().isAfter(campaign.scheduledAt))) {
-          await campaign.update({ status: "running", scheduledAt: campaign.scheduledAt || new Date() });
+          await campaign.update({ 
+            status: "running", 
+            scheduledAt: campaign.scheduledAt || new Date(),
+            startedAt: new Date() 
+          });
           log("INFO", "▶️ Campaign started", { campaignId: campaign.id });
         }
         if (campaign.status !== "running") continue;
+
+        /* =========================
+           SENDING WINDOW CHECK
+        ========================= */
+        const tz = campaign.timezone || "UTC";
+        const now = dayjs.utc().tz(tz);
+        const dayName = now.format("dddd").toLowerCase(); // e.g. "monday"
+        const currentTime = now.format("HH:mm");
+
+        const allowedDays = campaign.sendingDays || ["monday","tuesday","wednesday","thursday","friday"];
+        const startTime = campaign.startTime || "09:00";
+        const endTime = campaign.endTime || "18:00";
+
+        const isDayAllowed = allowedDays.includes(dayName);
+        const isTimeAllowed = currentTime >= startTime && currentTime <= endTime;
+
+        if (!isDayAllowed || !isTimeAllowed) {
+          log("DEBUG", "⏸️ Outside sending window, skipping campaign", {
+            campaignId: campaign.id,
+            dayName,
+            currentTime,
+            allowedDays,
+            startTime,
+            endTime,
+          });
+          continue;
+        }
 
         /* =========================
            WORM-UP & DAILY LIMITS
@@ -68,8 +99,25 @@ const log = (level, message, meta = {}) =>
           continue;
         }
 
-        // Adjust batch size based on remaining daily quota and throttle
-        const batchSize = Math.min(campaign.throttlePerMinute, health.remaining);
+        // Respect maxLeadsPerDay: count how many recipients were sent today
+        const startOfDay = dayjs.utc().tz(tz).startOf('day').utc().toDate();
+        const sentTodayCount = await CampaignRecipient.count({
+          where: {
+            campaignId: campaign.id,
+            lastSentAt: { [Op.gte]: startOfDay },
+          },
+        });
+
+        const maxPerDay = campaign.maxLeadsPerDay || 100;
+        const remainingToday = Math.max(0, maxPerDay - sentTodayCount);
+
+        if (remainingToday === 0) {
+          log("DEBUG", "📅 maxLeadsPerDay reached for today", { campaignId: campaign.id, sentToday: sentTodayCount, maxPerDay });
+          continue;
+        }
+
+        // Batch size = min(throttlePerMinute, warmup remaining, remaining daily quota)
+        const batchSize = Math.min(campaign.throttlePerMinute, health.remaining, remainingToday);
 
         const recipients = await CampaignRecipient.findAll({
           where: {
@@ -98,7 +146,9 @@ const log = (level, message, meta = {}) =>
           }
 
           channel.sendToQueue(QUEUES.CAMPAIGN_SEND, Buffer.from(JSON.stringify({ campaignId: campaign.id, recipientId: r.id })), { persistent: true });
-          await r.update({ nextRunAt: dayjs.utc().add(10, "minute").toDate() });
+          // Use campaign.sendingInterval (minutes) instead of hardcoded 10 min
+          const intervalMins = campaign.sendingInterval || 20;
+          await r.update({ nextRunAt: dayjs.utc().add(intervalMins, "minute").toDate() });
         }
       }
     } catch (err) {

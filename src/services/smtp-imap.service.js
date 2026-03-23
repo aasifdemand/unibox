@@ -22,6 +22,9 @@ export const verifySmtp = async ({ host, port, secure, user, password, proxy = n
 
     return { success: true };
   } catch (err) {
+    if (err.message.includes("403")) {
+      throw new Error(`Proxy blocked the connection (403). Webshare and other providers often block SMTP ports (587, 465) by default. Please ensure these ports are unblocked in your proxy dashboard or use a SOCKS5 proxy.`);
+    }
     throw new Error(err.message);
   }
 };
@@ -48,7 +51,13 @@ export const verifyImap = async ({ host, port, secure, user, password, proxy = n
         { protocol: secure ? "https:" : "http:", host, port: parseInt(port) },
         { rejectUnauthorized: false },
         (err, socket) => {
-          if (err) return reject(new Error(`Proxy connection failed: ${err.message}`));
+          if (err) {
+            let errorMsg = `Proxy connection failed: ${err.message}`;
+            if (err.message.includes("403")) {
+              errorMsg = `Proxy blocked the IMAP connection (403). Webshare and other providers often block IMAP ports (993) by default. Please ensure these ports are unblocked in your proxy dashboard or use a SOCKS5 proxy.`;
+            }
+            return reject(new Error(errorMsg));
+          }
 
           // Wrap in TLS if requested
           let connectionSocket = socket;

@@ -3,62 +3,80 @@ import dns from "dns/promises";
 import {
   SenderHealth,
   SmtpSender,
+  GmailSender,
+  OutlookSender,
   Email,
   BounceEvent,
 } from "../models/index.js";
 
 class SenderHealthService {
-  async evaluateSender(senderId) {
-    const sender = await SmtpSender.findByPk(senderId);
+  async evaluateSender(senderId, type = "smtp") {
+    let sender;
+    if (type === "gmail") {
+      sender = await GmailSender.findByPk(senderId);
+    } else if (type === "outlook") {
+      sender = await OutlookSender.findByPk(senderId);
+    } else {
+      sender = await SmtpSender.findByPk(senderId);
+    }
+
     if (!sender) throw new Error("Sender not found");
 
     const domain = sender.email.split("@")[1];
 
-    const spf = await this.checkSPF(domain);
+    let spf = { valid: true };
+    let dkimResult = { valid: true };
+    let dmarc = { valid: true, policy: "reject" };
+    let ptrResult = { valid: true };
+    let blacklist = { blacklisted: false };
 
-    // Discover DKIM selector if not provided
-    let dkimResult = { valid: false };
-    if (sender.dkimSelector) {
-      dkimResult = await this.checkDKIM(domain, sender.dkimSelector);
-    } else {
-      const discoveredDkim = await this.getDkimForDomain(domain);
-      if (discoveredDkim) {
-        dkimResult = { valid: true };
-        // Optionally update the sender record with the discovered selector for future use
-        if (sender.update) {
-          sender.update({ dkimSelector: discoveredDkim.selector }).catch(() => { });
-        }
-      }
-    }
+    // Only perform heavy DNS/IP checks for SMTP/Custom domains
+    // Gmail and Outlook consumer accounts are managed by providers and always valid
+    const isPublicProvider = ["gmail.com", "outlook.com", "hotmail.com"].includes(domain.toLowerCase());
+    
+    if (type === "smtp" && !isPublicProvider) {
+      spf = await this.checkSPF(domain);
 
-    const dmarc = await this.checkDMARC(domain);
-
-    // Discover sending IP if not provided
-    let ptrResult = { valid: false };
-    let sendingIp = sender.sendingIp;
-
-    if (!sendingIp) {
-      try {
-        const mxRecords = await dns.resolveMx(domain);
-        if (mxRecords && mxRecords.length > 0) {
-          // Sort by priority to try the primary MX first
-          mxRecords.sort((a, b) => a.priority - b.priority);
-          const primaryMx = mxRecords[0].exchange;
-          const aRecords = await dns.resolve4(primaryMx);
-          if (aRecords && aRecords.length > 0) {
-            sendingIp = aRecords[0];
+      // Discover DKIM selector if not provided
+      dkimResult = { valid: false };
+      if (sender.dkimSelector) {
+        dkimResult = await this.checkDKIM(domain, sender.dkimSelector);
+      } else {
+        const discoveredDkim = await this.getDkimForDomain(domain);
+        if (discoveredDkim) {
+          dkimResult = { valid: true };
+          if (sender.update) {
+            sender.update({ dkimSelector: discoveredDkim.selector }).catch(() => { });
           }
         }
-      } catch (e) {
-        // ignore
       }
-    }
 
-    if (sendingIp) {
-      ptrResult = await this.checkPTR(sendingIp);
-    }
+      dmarc = await this.checkDMARC(domain);
 
-    const blacklist = await this.checkBlacklist(sendingIp);
+      // Discover sending IP if not provided
+      ptrResult = { valid: false };
+      let sendingIp = sender.sendingIp;
+
+      if (!sendingIp) {
+        try {
+          const mxRecords = await dns.resolveMx(domain);
+          if (mxRecords && mxRecords.length > 0) {
+            mxRecords.sort((a, b) => a.priority - b.priority);
+            const primaryMx = mxRecords[0].exchange;
+            const aRecords = await dns.resolve4(primaryMx);
+            if (aRecords && aRecords.length > 0) {
+              sendingIp = aRecords[0];
+            }
+          }
+        } catch (e) { }
+      }
+
+      if (sendingIp) {
+        ptrResult = await this.checkPTR(sendingIp);
+      }
+
+      blacklist = await this.checkBlacklist(sendingIp);
+    }
 
     const behavior = await this.calculateBehavioralMetrics(senderId);
 

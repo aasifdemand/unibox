@@ -16,6 +16,9 @@ import mailboxesRoutes from "./routes/mailboxes.routes.js";
 import analyticsRoutes from "./routes/analytics.routes.js";
 import trackingRoutes from "./routes/tracking.route.js";
 import notificationRoutes from "./routes/notification.routes.js";
+import aiRoutes from "./routes/ai.routes.js";
+import integrationRoutes from "./routes/integration.routes.js";
+import crmRoutes from "./routes/crm.routes.js";
 import { responseMiddleware } from "./middlewares/response.middleware.js";
 import errorHandler from "./middlewares/error.middleware.js";
 import path from "path";
@@ -41,6 +44,16 @@ app.use(
     origin: function (origin, callback) {
       // allow requests with no origin (like mobile apps or curl requests)
       if (!origin) return callback(null, true);
+      
+      // Allow any localhost/127.0.0.1 for local dev, and allow salesforce redirects
+      if (
+        origin.startsWith("http://localhost") || 
+        origin.startsWith("http://127.0.0.1") || 
+        origin.includes("salesforce.com")
+      ) {
+        return callback(null, true);
+      }
+
       if (allowedOrigins.indexOf(origin) === -1) {
         const msg =
           "The CORS policy for this site does not allow access from the specified Origin.";
@@ -49,7 +62,7 @@ app.use(
       return callback(null, true);
     },
     credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
   }),
 );
 app.use(express.json());
@@ -86,6 +99,9 @@ app.use("/api/v1/templates", emailTempalteRoutes);
 app.use("/api/v1/mailboxes", mailboxesRoutes);
 app.use("/api/v1/tracking", trackingRoutes);
 app.use("/api/v1/notifications", notificationRoutes);
+app.use("/api/v1/crm", crmRoutes);
+app.use("/api/v1/ai", aiRoutes);
+app.use("/api/v1/integrations", integrationRoutes);
 
 // swagger
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));

@@ -178,6 +178,7 @@ export const createCampaign = asyncHandler(async (req, res) => {
     textBody,
     previewText,
     senderId,
+    senderIds,
     senderType,
     listBatchId,
     scheduledAt,
@@ -186,9 +187,15 @@ export const createCampaign = asyncHandler(async (req, res) => {
     trackOpens,
     trackClicks,
     unsubscribeLink,
+    sendingDays,
+    startTime,
+    endTime,
+    sendingInterval,
+    maxLeadsPerDay,
+    startDate,
   } = req.body;
 
-  if (!name || !subject || !senderId || !listBatchId) {
+  if (!name || !subject || (!senderId && (!senderIds || senderIds.length === 0)) || !listBatchId) {
     throw new AppError("Missing required fields", 400);
   }
 
@@ -230,7 +237,8 @@ export const createCampaign = asyncHandler(async (req, res) => {
   // ALWAYS create as DRAFT - activation happens separately
   const campaign = await Campaign.create({
     userId: req.user.id,
-    senderId,
+    senderId: senderId || (senderIds && senderIds[0]),
+    senderIds: senderIds || [senderId],
     senderType,
     listBatchId,
     name,
@@ -246,6 +254,12 @@ export const createCampaign = asyncHandler(async (req, res) => {
     trackOpens: trackOpens !== undefined ? trackOpens : true,
     trackClicks: trackClicks !== undefined ? trackClicks : true,
     unsubscribeLink: unsubscribeLink !== undefined ? unsubscribeLink : true,
+    sendingDays: sendingDays || ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+    startTime: startTime || '09:00',
+    endTime: endTime || '18:00',
+    sendingInterval: sendingInterval || 20,
+    maxLeadsPerDay: maxLeadsPerDay || 100,
+    startDate: startDate || null,
     status: "draft", // ALWAYS draft initially
     totalSent: 0,
     totalReplied: 0,
@@ -327,12 +341,20 @@ export const updateCampaign = asyncHandler(async (req, res) => {
     htmlBody,
     textBody,
     previewText,
+    senderId,
+    senderIds,
     scheduledAt,
     timezone,
     throttlePerMinute,
     trackOpens,
     trackClicks,
     unsubscribeLink,
+    sendingDays,
+    startTime,
+    endTime,
+    sendingInterval,
+    maxLeadsPerDay,
+    startDate,
   } = req.body;
 
   // Update only provided fields
@@ -342,6 +364,8 @@ export const updateCampaign = asyncHandler(async (req, res) => {
   if (htmlBody !== undefined) updates.htmlBody = htmlBody;
   if (textBody !== undefined) updates.textBody = textBody;
   if (previewText !== undefined) updates.previewText = previewText;
+  if (senderId !== undefined) updates.senderId = senderId;
+  if (senderIds !== undefined) updates.senderIds = senderIds;
   if (scheduledAt !== undefined)
     updates.scheduledAt = scheduledAt
       ? dayjs
@@ -355,6 +379,12 @@ export const updateCampaign = asyncHandler(async (req, res) => {
   if (trackOpens !== undefined) updates.trackOpens = trackOpens;
   if (trackClicks !== undefined) updates.trackClicks = trackClicks;
   if (unsubscribeLink !== undefined) updates.unsubscribeLink = unsubscribeLink;
+  if (sendingDays !== undefined) updates.sendingDays = sendingDays;
+  if (startTime !== undefined) updates.startTime = startTime;
+  if (endTime !== undefined) updates.endTime = endTime;
+  if (sendingInterval !== undefined) updates.sendingInterval = sendingInterval;
+  if (maxLeadsPerDay !== undefined) updates.maxLeadsPerDay = maxLeadsPerDay;
+  if (startDate !== undefined) updates.startDate = startDate;
 
   await campaign.update(updates);
 

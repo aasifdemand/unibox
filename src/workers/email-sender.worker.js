@@ -22,6 +22,8 @@ import BounceEvent from "../models/bounce-event.model.js";
 import SenderHealth from "../models/sender-health.model.js";
 
 import { smtpWarmupService } from "../services/smtp-warmup.service.js";
+import { syncLead } from "../services/crm-sync.service.js";
+import { syncLeadToAllCRMs } from "../services/crm-sync.provider.js";
 import { getChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
 import { refreshGoogleToken } from "../utils/refresh-google-token.js";
@@ -299,7 +301,7 @@ async function startWorker() {
         let providerConversationId = null;
 
         if (senderType === "smtp") {
-          const transporter = getOrCreateTransporter(sender, proxy);
+          const transporter = getOrCreateTransporter(sender, null);
 
           // 🔍 DNS pre-send check — warn if SPF/DKIM/DMARC are missing
           checkSenderDns(domain)
@@ -361,9 +363,7 @@ async function startWorker() {
 
               let imapForAppend;
               try {
-                const proxy = await getNextProxy();
-                if (proxy) log("DEBUG", "🌐 Using proxy for IMAP Sent folder append", { senderId: sender.id, proxy });
-                imapForAppend = await createImapConnection(sender, proxy);
+                imapForAppend = await createImapConnection(sender, null);
                 const resolvedSent = await resolveFolder(
                   imapForAppend,
                   sender,
@@ -583,6 +583,16 @@ async function startWorker() {
           domain,
         });
 
+        // 🏛️ SYNC LEAD TO CRM
+        // Internal
+        syncLead(emailRecord.userId, emailRecord.recipientEmail, "sent").catch(e => 
+          log("ERROR", "Failed to sync lead to CRM", { error: e.message })
+        );
+        // External
+        syncLeadToAllCRMs(emailRecord.userId, emailRecord.recipientEmail, "sent").catch(e => 
+          log("ERROR", "Failed to sync lead to external CRM", { error: e.message })
+        );
+
         channel.ack(msg);
       } catch (err) {
         log("ERROR", "Send failed", { error: err.message, stack: err.stack });
@@ -606,6 +616,20 @@ async function startWorker() {
             reason: err.message,
             occurredAt: new Date(),
           });
+
+          // 📊 Increment campaign bounce stats
+          if (emailRecord.campaignId) {
+            if (bounceType === "hard" || bounceType === "soft") {
+              await Campaign.increment("totalBounced", {
+                where: { id: emailRecord.campaignId },
+              });
+            }
+            if (bounceType === "complaint") {
+              await Campaign.increment("totalSenderBounced", {
+                where: { id: emailRecord.campaignId },
+              });
+            }
+          }
 
           // 🛑 STOP RECIPIENT ON HARD BOUNCE
           if (bounceType === "hard" && emailRecord.recipientId) {

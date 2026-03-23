@@ -11,6 +11,7 @@ import {
   generateCacheKey,
 } from "../utils/redis-client.js";
 import { withRateLimit, clearMailboxLimiter } from "../utils/rate-limiter.js";
+import { senderHealthService } from "../services/sender-health.service.js";
 
 // Cache TTLs (in seconds)
 const CACHE_TTL = {
@@ -919,6 +920,11 @@ export const syncGmailMailbox = asyncHandler(async (req, res) => {
       ),
       deleteCachedData(generateCacheKey("gmail", mailboxId, "labels")),
     ]);
+
+    // 🔥 Update reputation score immediately on manual sync
+    await senderHealthService.evaluateSender(mailboxId, "gmail").catch(err => {
+      console.error(`[Reputation Update Failed] Gmail ${mailboxId}:`, err.message);
+    });
 
     res.json({
       success: true,

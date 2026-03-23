@@ -1,6 +1,6 @@
 import { initGlobalErrorHandlers } from "../utils/error-handler.js";
 initGlobalErrorHandlers();
-import { SmtpSender } from "../models/index.js";
+import { SmtpSender, GmailSender, OutlookSender } from "../models/index.js";
 import { senderHealthService } from "../services/sender-health.service.js";
 
 (async () => {
@@ -9,22 +9,31 @@ import { senderHealthService } from "../services/sender-health.service.js";
   setInterval(
     async () => {
       try {
-        const senders = await SmtpSender.findAll({
-          where: { isVerified: true },
-        });
+        const [smtp, gmail, outlook] = await Promise.all([
+          SmtpSender.findAll({ where: { isVerified: true } }),
+          GmailSender.findAll({ where: { isVerified: true } }),
+          OutlookSender.findAll({ where: { isVerified: true } }),
+        ]);
 
-        console.log(`🔍 Starting full health evaluation for ${senders.length} senders...`);
+        const allSenders = [
+          ...smtp.map(s => ({ ...s.get(), type: 'smtp' })),
+          ...gmail.map(s => ({ ...s.get(), type: 'gmail' })),
+          ...outlook.map(s => ({ ...s.get(), type: 'outlook' })),
+        ];
+
+        console.log(`🔍 Starting full health evaluation for ${allSenders.length} senders...`);
 
         // 🚀 Process in parallel batches
         const BATCH_SIZE = 5;
-        for (let i = 0; i < senders.length; i += BATCH_SIZE) {
-          const batch = senders.slice(i, i + BATCH_SIZE);
+        for (let i = 0; i < allSenders.length; i += BATCH_SIZE) {
+          const batch = allSenders.slice(i, i + BATCH_SIZE);
 
           await Promise.allSettled(
             batch.map(async (sender) => {
               try {
-                const score = await senderHealthService.evaluateSender(sender.id);
-                console.log(`✅ Sender ${sender.email} evaluated. Score: ${score}/100`);
+                // Pass type to evaluateSender if needed, or let it handle it
+                const score = await senderHealthService.evaluateSender(sender.id, sender.type);
+                console.log(`✅ Sender [${sender.type}] ${sender.email} evaluated. Score: ${score}/100`);
               } catch (err) {
                 console.error(`❌ Health evaluation failed for ${sender.email}:`, err);
               }

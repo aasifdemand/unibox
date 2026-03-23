@@ -82,7 +82,17 @@ async function startWorker() {
 
       try {
         const campaign = await Campaign.findByPk(campaignId);
-        const sender = campaign ? await getSenderWithType(campaign.senderId, campaign.senderType) : null;
+        
+        // Pick sender for this send
+        let senderIdToUse = campaign?.senderId;
+        if (campaign?.senderIds && Array.isArray(campaign.senderIds) && campaign.senderIds.length > 0) {
+          // Deterministic rotation based on recipientId to keep follow-ups consistent if needed, 
+          // or just random for simple rotation. Let's go with random for now as requested.
+          const randomIndex = Math.floor(Math.random() * campaign.senderIds.length);
+          senderIdToUse = campaign.senderIds[randomIndex];
+        }
+
+        const sender = campaign ? await getSenderWithType(senderIdToUse, campaign.senderType) : null;
         const recipient = await CampaignRecipient.findByPk(recipientId);
 
         /* =========================
@@ -242,7 +252,7 @@ async function startWorker() {
         const [send, created] = await CampaignSend.findOrCreate({
           where: { campaignId, recipientId, step },
           defaults: {
-            senderId: campaign.senderId,
+            senderId: senderIdToUse,
             status: "queued",
             variantId,
           },
@@ -287,7 +297,7 @@ async function startWorker() {
           id: emailId,
           userId: campaign.userId,
           campaignId,
-          senderId: campaign.senderId,
+          senderId: senderIdToUse,
           senderType: campaign.senderType,
           recipientEmail: recipient.email,
           recipientId: recipient.id,

@@ -513,7 +513,7 @@ export const getSenderStats = asyncHandler(async (req, res) => {
     raw: true,
   });
 
-  console.log("Send Stats:", sendStats); // Debug log
+
 
   // Format the stats
   const stats = {
@@ -565,7 +565,7 @@ export const getSenderStats = asyncHandler(async (req, res) => {
   // Convert to array format for frontend
   const pieData = Object.values(stats);
 
-  console.log("Final Pie Data:", pieData); // Debug log
+
 
   res.json({
     success: true,

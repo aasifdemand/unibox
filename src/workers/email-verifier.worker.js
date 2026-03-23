@@ -76,11 +76,26 @@ async function submitBatchToEndBounce(emails) {
       config.proxy = false;
     }
 
-    const res = await axios.post(
-      "https://api.endbounce.com/api/integrations/v1/verify",
-      { emails },
-      config
-    );
+    let res;
+    try {
+      res = await axios.post(
+        "https://api.endbounce.com/api/integrations/v1/verify",
+        { emails },
+        config
+      );
+    } catch (apiErr) {
+      if (proxy && apiErr.response?.status === 403) {
+        console.warn("⚠️ Proxy blocked EndBounce submission (403). Falling back to direct connection.");
+        const directConfig = { ...config, httpsAgent: null, proxy: false };
+        res = await axios.post(
+          "https://api.endbounce.com/api/integrations/v1/verify",
+          { emails },
+          directConfig
+        );
+      } else {
+        throw apiErr;
+      }
+    }
 
     // Detect mode: 'sync'
     if (res.data.mode === 'sync') {

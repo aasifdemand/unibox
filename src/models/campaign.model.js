@@ -18,7 +18,16 @@ const Campaign = sequelize.define(
     senderId: {
       type: DataTypes.UUID,
       allowNull: false,
-      // REMOVE THE REFERENCES since we have polymorphic associations
+    },
+
+    senderIds: {
+      type: DataTypes.JSON,
+      defaultValue: [],
+    },
+
+    isMultiSender: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
     },
 
     name: {
@@ -61,6 +70,11 @@ const Campaign = sequelize.define(
       allowNull: true,
     },
 
+    startedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+
     // 👇 ADD THESE TRACKING FIELDS
     trackOpens: {
       type: DataTypes.BOOLEAN,
@@ -96,7 +110,15 @@ const Campaign = sequelize.define(
       type: DataTypes.INTEGER,
       defaultValue: 0,
     },
+    totalSenderBounced: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+    },
     totalUnsubscribed: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+    },
+    totalPositiveReplied: {
       type: DataTypes.INTEGER,
       defaultValue: 0,
     },
@@ -123,6 +145,32 @@ const Campaign = sequelize.define(
       type: DataTypes.ENUM("gmail", "outlook", "smtp"),
       allowNull: false,
       defaultValue: "smtp",
+    },
+
+    // New Scheduling Fields
+    sendingDays: {
+      type: DataTypes.JSON,
+      defaultValue: ["monday", "tuesday", "wednesday", "thursday", "friday"],
+    },
+    startTime: {
+      type: DataTypes.STRING,
+      defaultValue: "09:00",
+    },
+    endTime: {
+      type: DataTypes.STRING,
+      defaultValue: "18:00",
+    },
+    sendingInterval: {
+      type: DataTypes.INTEGER,
+      defaultValue: 20, // minutes
+    },
+    maxLeadsPerDay: {
+      type: DataTypes.INTEGER,
+      defaultValue: 100,
+    },
+    startDate: {
+      type: DataTypes.DATE,
+      allowNull: true,
     },
   },
   {

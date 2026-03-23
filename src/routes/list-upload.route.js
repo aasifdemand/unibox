@@ -9,6 +9,7 @@ import {
   retryBatch,
   uploadList,
   getAllUserContacts,
+  enrichContact,
 } from "../controllers/list-upload.controller.js";
 import { protect } from "../middlewares/auth.middleware.js";
 
@@ -119,10 +120,10 @@ router.get("/batches", protect, getUserBatches);
  */
 router.get("/contacts", protect, getAllUserContacts);
 
-// In your backend routes (list-upload.routes.js or similar)
 router.delete("/batch/:batchId", protect, deleteBatch);
 router.delete("/contact/:recordId", protect, deleteContact);
 router.post("/batch/:batchId/retry", protect, retryBatch);
 router.get("/batch/:batchId/export", protect, exportBatch);
+router.post("/contact/:contactId/enrich", protect, enrichContact);
 
 export default router;

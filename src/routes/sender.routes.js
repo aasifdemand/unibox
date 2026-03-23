@@ -12,7 +12,6 @@ import {
   testImapConnection,
   getSender,
   updateSender,
-  bulkUploadSenders,
   bulkDeleteSenders,
 } from "../controllers/sender.controller.js";
 import GmailSender from "../models/gmail-sender.model.js";
@@ -96,7 +95,6 @@ const router = Router();
  *         description: Validation error
  */
 router.post("/create", protect, createSender);
-router.post("/bulk-upload", protect, upload.single("file"), bulkUploadSenders);
 router.post("/bulk-delete", protect, bulkDeleteSenders);
 
 /**

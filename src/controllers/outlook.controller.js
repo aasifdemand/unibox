@@ -11,6 +11,7 @@ import {
   generateCacheKey,
 } from "../utils/redis-client.js";
 import { withRateLimit, clearMailboxLimiter } from "../utils/rate-limiter.js";
+import { senderHealthService } from "../services/sender-health.service.js";
 
 const httpsAgent = new https.Agent({
   keepAlive: true,
@@ -757,6 +758,11 @@ export const syncOutlookMailbox = asyncHandler(async (req, res) => {
       ),
       deleteCachedData(generateCacheKey("outlook", mailboxId, "folders")),
     ]);
+
+    // 🔥 Update reputation score immediately on manual sync
+    await senderHealthService.evaluateSender(mailboxId, "outlook").catch(err => {
+      console.error(`[Reputation Update Failed] Outlook ${mailboxId}:`, err.message);
+    });
 
     res.json({
       success: true,

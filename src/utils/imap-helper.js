@@ -1,6 +1,8 @@
 import { HttpsProxyAgent } from "https-proxy-agent";
-import net from "net";
 import tls from "tls";
+import Imap from "imap";
+import util from "util";
+import AppError from "./app-error.js";
 
 /**
  * Creates and connects a new IMAP client
@@ -44,7 +46,18 @@ export function createImapConnection(sender, proxy = null) {
                 { protocol: secure ? "https:" : "http:", host, port },
                 { rejectUnauthorized: false },
                 (err, socket) => {
-                    if (err) return reject(new AppError(`IMAP Proxy connection failed: ${err.message}`, 500));
+                    if (err) {
+                        if (err.message.includes("403")) {
+                            console.warn(`⚠️ IMAP Proxy blocked connection (403) for ${sender.email}. Falling back to direct.`);
+                            // Fallback to direct connection
+                            const imap = new Imap(imapConfig);
+                            imap.once("ready", () => handleReady(imap));
+                            imap.once("error", handleError);
+                            imap.connect();
+                            return;
+                        }
+                        return reject(new AppError(`IMAP Proxy connection failed: ${err.message}`, 500));
+                    }
 
                     let connectionSocket = socket;
                     if (secure) {
