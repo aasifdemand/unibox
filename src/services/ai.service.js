@@ -78,6 +78,8 @@ export const generateSequence = async (goal, tone = "professional", stepsCount =
     : "{{first_name}}, {{company}}, {{sender_name}}, {{job_title}}, {{city}}";
 
   const prompt = `
+    Campaign Goal: ${goal}
+    Tone of Voice: ${tone}
     Requirement: Return ONLY a JSON array of ${stepsCount} objects: {"subject": "...", "body": "..."}.
     Placeholders: ${varString}.
     Tags: {{sl_time_of_day}}, {{sl_day_of_week}}.
