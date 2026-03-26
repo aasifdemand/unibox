@@ -1,45 +1,54 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import axios from "axios";
 import dotenv from "dotenv";
 
 dotenv.config();
 
-// Create the client
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || "http://localhost:11434";
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "llama3";
 
 /**
- * Robust model getter that uses the most stable alias for the user's key.
+ * Call local Ollama API.
  */
-const getModel = (jsonMode = false) => {
-  const modelId = "gemini-flash-latest";
-  
-  if (jsonMode) {
-    return genAI.getGenerativeModel({ 
-      model: modelId,
-      generationConfig: { responseMimeType: "application/json" }
+const callOllama = async (prompt, jsonMode = false) => {
+  try {
+    const response = await axios.post(`${OLLAMA_BASE_URL}/api/generate`, {
+      model: OLLAMA_MODEL,
+      prompt: prompt,
+      stream: false,
+      format: jsonMode ? "json" : undefined
     });
+    return response.data.response;
+  } catch (error) {
+    console.error("Ollama Error:", error.message);
+    throw error;
   }
-  
-  return genAI.getGenerativeModel({ model: modelId });
 };
 
 /**
  * Generate a sequence of emails based on a goal and tone.
  */
-export const generateSequence = async (goal, tone = "professional", stepsCount = 3) => {
-  const model = getModel(true); // Enable JSON mode
-  
+export const generateSequence = async (goal, tone = "professional", stepsCount = 3, variables = []) => {
+  const varString = variables.length > 0 
+    ? variables.map(v => `{{${v}}}`).join(", ") 
+    : "{{first_name}}, {{company}}, {{sender_name}}, {{job_title}}, {{city}}";
+
   const prompt = `
     You are an expert cold email copywriter. Generate a ${stepsCount}-step email sequence for the following goal: "${goal}".
     Tone: ${tone}
     
     Requirements:
     - Keep emails concise and human-like.
-    - Use placeholders like {{first_name}}, {{company}}, {{sender_name}}.
-    - Email 1: The Hook & Value Prop.
-    - Email 2: Social Proof or Case Study.
-    - Email 3: The Soft Breakup / Final Follow-up.
+    - Use placeholders ONLY from this list: ${varString}.
+    - Do NOT include a manual unsubscribe link; the system handles this automatically.
+    - Use Spintax for variety, e.g., {Hi|Hello|Hey} {{first_name}}.
+    - Use Smart Tags for context: {{sl_time_of_day}}, {{sl_day_of_week}}.
     
-    Return the response as a JSON array of objects, each with 'subject' and 'body' (in HTML format).
+    Sequence Pattern:
+    - Step 1: The Hook & Value Prop.
+    ${stepsCount > 1 ? `- Steps 2 to ${stepsCount - 1}: Follow-ups with social proof, case studies, or different angles.` : ""}
+    ${stepsCount > 1 ? `- Step ${stepsCount} (Final): The Soft Breakup / Final Follow-up.` : ""}
+    
+    Return the response as a JSON array of ${stepsCount} objects, each with 'subject' and 'body' (in HTML format).
     Example Schema:
     [
       {
@@ -50,36 +59,11 @@ export const generateSequence = async (goal, tone = "professional", stepsCount =
   `;
 
   try {
-    const result = await model.generateContent(prompt);
-    const text = result.response.text();
-    
-    // With JSON mode, it should be a pure JSON string
-    try {
-      return JSON.parse(text);
-    } catch (parseError) {
-      console.error("JSON Mode Parse Error, trying regex extraction:", parseError);
-      const jsonMatch = text.match(/\[.*\]/s);
-      if (jsonMatch) return JSON.parse(jsonMatch[0]);
-      throw parseError;
-    }
+    console.log(`Attempting sequence generation with Ollama (${OLLAMA_MODEL}) - Steps: ${stepsCount}...`);
+    const text = await callOllama(prompt, true);
+    return JSON.parse(text);
   } catch (error) {
-    console.error("AI Sequence Generation Error:", error);
-    
-    // Fallback logic for any model-related errors
-    if (error.status === 404 || error.status === 429 || error.message.includes("404") || error.message.includes("429")) {
-      console.log("Primary model failed or quota exceeded, attempting gemini-pro-latest fallback...");
-      try {
-        const fallbackModel = genAI.getGenerativeModel({ 
-          model: "gemini-pro-latest",
-          generationConfig: { responseMimeType: "application/json" }
-        });
-        const result = await fallbackModel.generateContent(prompt);
-        return JSON.parse(result.response.text());
-      } catch (e2) {
-        console.error("All AI models failed or were blocked by quota.");
-        throw error;
-      }
-    }
+    console.error("AI Generation Failed:", error.message);
     throw error;
   }
 };
@@ -88,8 +72,6 @@ export const generateSequence = async (goal, tone = "professional", stepsCount =
  * Classify the intent of a recipient's reply.
  */
 export const classifyIntent = async (replyContent) => {
-  const model = getModel(); // No JSON mode needed for single string response
-
   const prompt = `
     Analyze the following email reply and classify the sender's intent into exactly ONE of these categories:
     - interested: They want to chat, see a demo, or ask for more info.
@@ -107,26 +89,12 @@ export const classifyIntent = async (replyContent) => {
   `;
 
   try {
-    const result = await model.generateContent(prompt);
-    const intent = result.response.text().trim().toLowerCase();
-    
+    console.log(`Attempting intent classification with Ollama (${OLLAMA_MODEL})...`);
+    const intent = (await callOllama(prompt)).trim().toLowerCase();
     const validIntents = ["interested", "not_interested", "out_of_office", "wrong_person", "replied"];
     return validIntents.includes(intent) ? intent : "replied";
   } catch (error) {
-    console.error("AI Intent Classification Error:", error);
-    
-    // Fallback for intent detection
-    if (error.status === 404 || error.status === 429) {
-      try {
-        const fallbackModel = genAI.getGenerativeModel({ model: "gemini-pro-latest" });
-        const result = await fallbackModel.generateContent(prompt);
-        const intent = result.response.text().trim().toLowerCase();
-        const validIntents = ["interested", "not_interested", "out_of_office", "wrong_person", "replied"];
-        return validIntents.includes(intent) ? intent : "replied";
-      } catch (retryError) {
-        return "replied";
-      }
-    }
+    console.error("AI Intent Classification Failed:", error.message);
     return "replied"; // Safe fallback
   }
 };

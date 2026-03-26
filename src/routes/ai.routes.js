@@ -9,13 +9,13 @@ const router = express.Router();
  */
 router.post("/generate-sequence", protect, async (req, res) => {
   try {
-    const { goal, tone, stepsCount } = req.body;
+    const { goal, tone, stepsCount, variables } = req.body;
     
     if (!goal) {
       return res.status(400).json({ success: false, message: "Goal is required" });
     }
 
-    const sequence = await generateSequence(goal, tone, stepsCount);
+    const sequence = await generateSequence(goal, tone, stepsCount, variables);
     res.json({ success: true, data: sequence });
   } catch (error) {
     console.error("AI Route Error:", error);
