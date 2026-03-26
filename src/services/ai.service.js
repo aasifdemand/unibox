@@ -7,6 +7,38 @@ const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || "http://localhost:11434";
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "llama3";
 
 /**
+ * Extract JSON from a string (handles markdown blocks or preamble).
+ */
+const extractJson = (text) => {
+  try {
+    // Try direct parse first
+    return JSON.parse(text);
+  } catch (e) {
+    // Try to find JSON block in markdown
+    const match = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    if (match) {
+      try {
+        return JSON.parse(match[1]);
+      } catch (inner) {
+        console.error("Failed to parse matched JSON block:", inner.message);
+      }
+    }
+    
+    // Try to find anything between [ ] or { }
+    const bracketMatch = text.match(/\[[\s\S]*\]/) || text.match(/\{[\s\S]*\}/);
+    if (bracketMatch) {
+      try {
+        return JSON.parse(bracketMatch[0]);
+      } catch (inner) {
+        console.error("Failed to parse bracketed content:", inner.message);
+      }
+    }
+    
+    throw new Error("Could not extract valid JSON from AI response.");
+  }
+};
+
+/**
  * Call local Ollama API.
  */
 const callOllama = async (prompt, jsonMode = false) => {
@@ -16,10 +48,16 @@ const callOllama = async (prompt, jsonMode = false) => {
       prompt: prompt,
       stream: false,
       format: jsonMode ? "json" : undefined
+    }, {
+      timeout: 120000 // 120 seconds for slow models
     });
     return response.data.response;
   } catch (error) {
-    console.error("Ollama Error:", error.message);
+    if (error.code === 'ECONNABORTED') {
+      console.error("Ollama Timeout: The model took too long to respond.");
+      throw new Error("AI generation timed out. Please try again or use a simpler prompt.");
+    }
+    console.error("Ollama Error:", error.response?.data || error.message);
     throw error;
   }
 };
@@ -49,6 +87,8 @@ export const generateSequence = async (goal, tone = "professional", stepsCount =
     ${stepsCount > 1 ? `- Step ${stepsCount} (Final): The Soft Breakup / Final Follow-up.` : ""}
     
     Return the response as a JSON array of ${stepsCount} objects, each with 'subject' and 'body' (in HTML format).
+    DO NOT include any commentary or explanation before or after the JSON.
+    
     Example Schema:
     [
       {
@@ -61,7 +101,7 @@ export const generateSequence = async (goal, tone = "professional", stepsCount =
   try {
     console.log(`Attempting sequence generation with Ollama (${OLLAMA_MODEL}) - Steps: ${stepsCount}...`);
     const text = await callOllama(prompt, true);
-    return JSON.parse(text);
+    return extractJson(text);
   } catch (error) {
     console.error("AI Generation Failed:", error.message);
     throw error;
