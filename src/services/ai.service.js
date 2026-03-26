@@ -77,18 +77,21 @@ export const generateSequence = async (goal, tone = "professional", stepsCount =
     ? variables.map(v => `{{${v}}}`).join(", ")
     : "{{first_name}}, {{company}}, {{sender_name}}, {{job_title}}, {{city}}";
 
-  const prompt = `
-    Campaign Goal: ${goal}
-    Tone of Voice: ${tone}
-    Requirement: Return ONLY a JSON array of ${stepsCount} objects: {"subject": "...", "body": "..."}.
-    Placeholders: ${varString}.
-    Tags: {{sl_time_of_day}}, {{sl_day_of_week}}.
-    
-    Email Pattern:
-    1: Hook. ${stepsCount > 1 ? `2 to ${stepsCount - 1}: Follow-ups. ${stepsCount}: Breakup.` : ""}
-    
-    NO commentary. NO markdown unless it contains the JSON.
-  `;
+  const prompt = `You are an expert sales Copywriter specialized in outbound email sequences.
+Goal: ${goal}. Tone: ${tone}. Steps: ${stepsCount}. 
+Available Variables: ${varString}. 
+
+Task: Create a ${stepsCount}-step email sequence:
+1. Step 1 (Hook): Must be high-impact, personalized using variables, and focus on a problem-solution fit.
+2. Steps 2+ (Follow-ups): Must be short, concise (2-3 sentences max), and continue the thread of the first email naturally. 
+
+Persona Guidelines:
+- Avoid overly formal/robotic salutations, but ALWAYS include a professional sign-off (e.g. Best regards, Cheers, etc.) followed by {{sender_name}}.
+- Weave variables into sentences naturally—don't just list them.
+- Use {{sl_time_of_day}} and {{sl_day_of_week}} for context.
+
+Output: Return ONLY a JSON array of ${stepsCount} objects: [{"subject": "...", "body": "..."}].
+NO commentary. NO markdown. JUST RAW JSON.`;
 
   try {
     console.log(`Attempting sequence generation with Ollama (${OLLAMA_MODEL}) - Steps: ${stepsCount}...`);
@@ -128,5 +131,49 @@ export const classifyIntent = async (replyContent) => {
   } catch (error) {
     console.error("AI Intent Classification Failed:", error.message);
     return "replied"; // Safe fallback
+  }
+};
+
+/**
+ * Stream a sequence generation from Ollama.
+ */
+export const generateSequenceStream = async (goal, tone = "professional", stepsCount = 3, variables = []) => {
+  const varString = variables.length > 0
+    ? variables.map(v => `{{${v}}}`).join(", ")
+    : "{{first_name}}, {{company}}, {{sender_name}}, {{job_title}}, {{city}}";
+
+  const prompt = `You are an expert sales Copywriter specialized in outbound email sequences.
+Goal: ${goal}. Tone: ${tone}. Steps: ${stepsCount}. 
+Available Variables: ${varString}. 
+
+Task: Create a ${stepsCount}-step email sequence:
+1. Step 1 (Hook): Must be high-impact, personalized using variables, and focus on a problem-solution fit.
+2. Steps 2+ (Follow-ups): Must be short, concise (2-3 sentences max), and continue the thread of the first email naturally. 
+
+Persona Guidelines:
+- Avoid overly formal/robotic salutations, but ALWAYS include a professional sign-off (e.g. Best regards, Cheers, etc.) followed by {{sender_name}}.
+- Weave variables into sentences naturally—don't just list them.
+- Use {{sl_time_of_day}} and {{sl_day_of_week}} for context.
+
+Output: Return ONLY a JSON array of ${stepsCount} objects: [{"subject": "...", "body": "..."}].
+NO commentary. NO markdown. JUST RAW JSON.`;
+
+  try {
+    console.log(`Streaming sequence generation with Ollama (${OLLAMA_MODEL}) - Steps: ${stepsCount}...`);
+    
+    const response = await axios.post(`${OLLAMA_BASE_URL}/api/generate`, {
+      model: OLLAMA_MODEL,
+      prompt: prompt,
+      stream: true,
+      format: "json"
+    }, {
+      responseType: 'stream',
+      timeout: 120000
+    });
+
+    return response.data; // This is a readable stream of Ollama response chunks
+  } catch (error) {
+    console.error("AI Streaming Generation Failed:", error.message);
+    throw error;
   }
 };
