@@ -10,10 +10,16 @@ const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "llama3";
  * Extract JSON from a string (handles markdown blocks or preamble).
  */
 const extractJson = (text) => {
+  if (!text || text.trim() === "") {
+    throw new Error("AI returned an empty response.");
+  }
+
   try {
     // Try direct parse first
     return JSON.parse(text);
   } catch (e) {
+    console.log(e);
+
     // Try to find JSON block in markdown
     const match = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
     if (match) {
@@ -23,7 +29,7 @@ const extractJson = (text) => {
         console.error("Failed to parse matched JSON block:", inner.message);
       }
     }
-    
+
     // Try to find anything between [ ] or { }
     const bracketMatch = text.match(/\[[\s\S]*\]/) || text.match(/\{[\s\S]*\}/);
     if (bracketMatch) {
@@ -33,7 +39,8 @@ const extractJson = (text) => {
         console.error("Failed to parse bracketed content:", inner.message);
       }
     }
-    
+
+    console.error("Raw AI Response that failed parsing:", text);
     throw new Error("Could not extract valid JSON from AI response.");
   }
 };
@@ -66,36 +73,19 @@ const callOllama = async (prompt, jsonMode = false) => {
  * Generate a sequence of emails based on a goal and tone.
  */
 export const generateSequence = async (goal, tone = "professional", stepsCount = 3, variables = []) => {
-  const varString = variables.length > 0 
-    ? variables.map(v => `{{${v}}}`).join(", ") 
+  const varString = variables.length > 0
+    ? variables.map(v => `{{${v}}}`).join(", ")
     : "{{first_name}}, {{company}}, {{sender_name}}, {{job_title}}, {{city}}";
 
   const prompt = `
-    You are an expert cold email copywriter. Generate a ${stepsCount}-step email sequence for the following goal: "${goal}".
-    Tone: ${tone}
+    Requirement: Return ONLY a JSON array of ${stepsCount} objects: {"subject": "...", "body": "..."}.
+    Placeholders: ${varString}.
+    Tags: {{sl_time_of_day}}, {{sl_day_of_week}}.
     
-    Requirements:
-    - Keep emails concise and human-like.
-    - Use placeholders ONLY from this list: ${varString}.
-    - Do NOT include a manual unsubscribe link; the system handles this automatically.
-    - Use Spintax for variety, e.g., {Hi|Hello|Hey} {{first_name}}.
-    - Use Smart Tags for context: {{sl_time_of_day}}, {{sl_day_of_week}}.
+    Email Pattern:
+    1: Hook. ${stepsCount > 1 ? `2 to ${stepsCount - 1}: Follow-ups. ${stepsCount}: Breakup.` : ""}
     
-    Sequence Pattern:
-    - Step 1: The Hook & Value Prop.
-    ${stepsCount > 1 ? `- Steps 2 to ${stepsCount - 1}: Follow-ups with social proof, case studies, or different angles.` : ""}
-    ${stepsCount > 1 ? `- Step ${stepsCount} (Final): The Soft Breakup / Final Follow-up.` : ""}
-    
-    Return the response as a JSON array of ${stepsCount} objects, each with 'subject' and 'body' (in HTML format).
-    DO NOT include any commentary or explanation before or after the JSON.
-    
-    Example Schema:
-    [
-      {
-        "subject": "Question for {{first_name}}",
-        "body": "<p>Hello {{first_name}},...</p>"
-      }
-    ]
+    NO commentary. NO markdown unless it contains the JSON.
   `;
 
   try {
