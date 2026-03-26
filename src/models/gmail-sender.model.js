@@ -18,7 +18,7 @@ const GmailSender = sequelize.define(
     email: {
       type: DataTypes.STRING,
       allowNull: false,
-      unique: true,
+      unique: false,
       validate: {
         isEmail: true,
       },
@@ -142,7 +142,7 @@ const GmailSender = sequelize.define(
     timestamps: true,
     paranoid: true,
     indexes: [
-      { unique: true, fields: ["email"] },
+      { unique: true, fields: ["email", "userId"] },
       { fields: ["userId"] },
       { fields: ["googleId"] },
       { fields: ["isVerified"] },

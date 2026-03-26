@@ -18,7 +18,7 @@ const SmtpSender = sequelize.define(
     email: {
       type: DataTypes.STRING,
       allowNull: false,
-      unique: true,
+      unique: false,
       validate: {
         isEmail: true,
       },
@@ -195,7 +195,7 @@ const SmtpSender = sequelize.define(
     timestamps: true,
     paranoid: true,
     indexes: [
-      { unique: true, fields: ["email"] },
+      { unique: true, fields: ["email", "userId"] },
       { fields: ["userId"] },
       { fields: ["domain"] },
       { fields: ["isVerified"] },

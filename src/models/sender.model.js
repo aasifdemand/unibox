@@ -18,7 +18,7 @@ const Sender = sequelize.define(
     email: {
       type: DataTypes.STRING,
       allowNull: false,
-      unique: true,
+      unique: false,
     },
 
     displayName: {
@@ -93,7 +93,7 @@ const Sender = sequelize.define(
     tableName: "senders",
     timestamps: true,
     paranoid: true,
-    indexes: [{ unique: true, fields: ["email"] }],
+    indexes: [{ unique: true, fields: ["email", "userId"] }],
   },
 );
 
