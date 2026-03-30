@@ -12,6 +12,9 @@ import {
 } from "../utils/redis-client.js";
 import { withRateLimit, clearMailboxLimiter } from "../utils/rate-limiter.js";
 import { senderHealthService } from "../services/sender-health.service.js";
+import { MailboxFolder, MailboxMessage } from "../models/index.js";
+import { queueMailboxSync } from "../queues/mailbox.queue.js";
+import { Op } from "sequelize";
 
 const httpsAgent = new https.Agent({
   keepAlive: true,
@@ -85,10 +88,26 @@ const getOutlookClient = async (sender) => {
 const getOutlookMessagesInternal = async (req, res, explicitFolderId = null) => {
   const { mailboxId } = req.params;
   const userId = req.user.id;
-  const { skipToken, top = 10, folderId: queryFolderId = "inbox", search = "" } = req.query;
+  const { skipToken, top = 10, folderId: queryFolderId, search = "" } = req.query;
 
   // Prioritize explicitFolderId from specialized handlers
-  const folderId = explicitFolderId || queryFolderId || "inbox";
+  const folderId = explicitFolderId || queryFolderId;
+
+  if (!folderId) {
+    return res.json({
+      success: true,
+      data: {
+        messages: [],
+        nextSkipToken: null,
+        count: 0,
+        totalCount: 0,
+        page: 1,
+        totalPages: 0,
+        hasMore: false,
+      },
+      message: "No folder selected"
+    });
+  }
 
   const sender = await OutlookSender.findOne({
     where: { id: mailboxId, userId, isVerified: true },
@@ -122,7 +141,65 @@ const getOutlookMessagesInternal = async (req, res, explicitFolderId = null) => 
       search || "nosearch",
     );
 
-    // Try cache first (only for first page)
+    // 1. Try to fetch from local database first
+    const localFolder = await MailboxFolder.findOne({
+      where: { senderId: mailboxId, [Op.or]: [{ providerFolderId: folderId }, { folderType: normalizedFolderId }] }
+    });
+
+    if (localFolder) {
+      let page = Math.max(1, parseInt(req.query.page) || 1);
+      let offset = (page - 1) * pageSize;
+
+      // If skipToken is a numeric offset, use it directly
+      if (skipToken && !isNaN(skipToken)) {
+        offset = parseInt(skipToken);
+        page = Math.floor(offset / pageSize) + 1;
+      }
+
+      const [localMessages, totalCount] = await Promise.all([
+        MailboxMessage.findAll({
+          where: { folderId: localFolder.id },
+          order: [['date', 'DESC']],
+          limit: pageSize,
+          offset: offset,
+        }),
+        MailboxMessage.count({ where: { folderId: localFolder.id } })
+      ]);
+
+      if (localMessages.length > 0) {
+        const hasMore = totalCount > (offset + pageSize);
+        return res.json({
+          success: true,
+          fromCache: true,
+          isLocal: true,
+          data: {
+            messages: localMessages.map(m => ({
+              id: m.providerMessageId,
+              subject: m.subject,
+              from: { emailAddress: { address: m.from } },
+              receivedDateTime: m.date,
+              isRead: m.isRead,
+              bodyPreview: m.snippet,
+              conversationId: m.providerThreadId,
+            })),
+            nextSkipToken: hasMore ? (offset + pageSize).toString() : null,
+            count: totalCount,
+            totalCount,
+            page,
+            totalPages: Math.ceil(totalCount / pageSize),
+            folderId,
+            folderType: localFolder.folderType,
+            hasMore: hasMore,
+            top: pageSize,
+          }
+        });
+      }
+    }
+
+    // 2. Trigger background sync
+    queueMailboxSync(mailboxId, 'outlook');
+
+    // 3. Try cache first (only for first page) (Legacy fallback)
     if (!skipToken && !search) {
       const cached = await getCachedData(cacheKey);
       if (cached) {
@@ -242,7 +319,37 @@ export const getOutlookFolders = asyncHandler(async (req, res) => {
   return withRateLimit(mailboxId, "outlook", async () => {
     const cacheKey = generateCacheKey("outlook", mailboxId, "folders");
 
-    // Try cache first
+    // 1. Try local DB first
+    const localFolders = await MailboxFolder.findAll({
+      where: { senderId: mailboxId }
+    });
+
+    if (localFolders.length > 0) {
+      return res.json({
+        success: true,
+        fromCache: true,
+        isLocal: true,
+        data: {
+          folders: localFolders.map(f => ({
+            id: f.providerFolderId,
+            name: f.name,
+            folderType: f.folderType,
+            unreadCount: f.unreadCount || 0,
+            totalCount: f.totalCount || 0,
+          })),
+          flatList: localFolders.map(f => ({
+            id: f.providerFolderId,
+            name: f.name,
+            folderType: f.folderType,
+          }))
+        }
+      });
+    }
+
+    // 2. Trigger sync
+    queueMailboxSync(mailboxId, 'outlook');
+
+    // 3. Try cache first (Legacy fallback)
     const cached = await getCachedData(cacheKey);
     if (cached) {
       return res.json({ success: true, data: cached, fromCache: true });
@@ -447,6 +554,15 @@ export const deleteOutlookMessage = asyncHandler(async (req, res) => {
     const client = await getOutlookClient(sender);
 
     await client.delete(`/me/messages/${messageId}`);
+
+    // Instant DB Sync: Remove from database
+    try {
+      await MailboxMessage.destroy({
+        where: { senderId: mailboxId, providerMessageId: messageId }
+      });
+    } catch (dbError) {
+      console.error("Outlook delete DB sync error:", dbError);
+    }
 
     // Invalidate all caches for this mailbox
     await deleteCachedData(generateCacheKey("outlook", mailboxId, "*"));
@@ -740,10 +856,21 @@ export const syncOutlookMailbox = asyncHandler(async (req, res) => {
       folderMap[folderId.toLowerCase()] ||
       `/me/mailFolders/${folderId}/messages`;
 
-    // Test connection
+    // 1. Verify connection
     await client.get(endpoint, { params: { $top: 1 } });
 
-    // Update last sync timestamp
+    // 2. Queue full background sync
+    await queueMailboxSync(mailboxId, "outlook");
+
+    // 3. Clear existing message cache for this mailbox to ensure immediate refresh
+    await Promise.all([
+      deleteCachedData(
+        generateCacheKey("outlook", mailboxId, "messages", "*"),
+      ),
+      deleteCachedData(generateCacheKey("outlook", mailboxId, "folders")),
+    ]);
+
+    // 4. Update last sync timestamp
     const updateData = { lastInboxSyncAt: new Date() };
     if (folderId === "sentitems" || folderId === "sent")
       updateData.lastSentSyncAt = new Date();
@@ -751,22 +878,14 @@ export const syncOutlookMailbox = asyncHandler(async (req, res) => {
 
     await sender.update(updateData);
 
-    // Invalidate cache for this folder
-    await Promise.all([
-      deleteCachedData(
-        generateCacheKey("outlook", mailboxId, "messages", folderId, "*"),
-      ),
-      deleteCachedData(generateCacheKey("outlook", mailboxId, "folders")),
-    ]);
-
-    // 🔥 Update reputation score immediately on manual sync
+    // 5. Update reputation score
     await senderHealthService.evaluateSender(mailboxId, "outlook").catch(err => {
       console.error(`[Reputation Update Failed] Outlook ${mailboxId}:`, err.message);
     });
 
     res.json({
       success: true,
-      message: `Mailbox synced successfully (${folderId})`,
+      message: `Mailbox sync triggered successfully for ${folderId}`,
       data: { syncedAt: new Date(), folderId },
     });
   });

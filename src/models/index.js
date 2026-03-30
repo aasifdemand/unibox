@@ -20,6 +20,8 @@ import Notification from "./notification.model.js";
 import CrmStage from "./crm-stage.model.js";
 import Lead from "./lead.model.js";
 import Integration from "./integration.model.js";
+import MailboxFolder from "./mailbox-folder.model.js";
+import MailboxMessage from "./mailbox-message.model.js";
 /* =====================================================
    USER OWNERSHIP
 ===================================================== */
@@ -337,6 +339,44 @@ Lead.belongsTo(CrmStage, { foreignKey: "stageId" });
 // Contact → Lead
 ListUploadRecord.hasOne(Lead, { foreignKey: "contactId", onDelete: "CASCADE" });
 Lead.belongsTo(ListUploadRecord, { foreignKey: "contactId", as: "contact" });
+
+/* =====================================================
+   MAILBOX SYNC ENGINE RELATIONSHIPS
+===================================================== */
+
+// Folders ↔ Messages
+MailboxFolder.hasMany(MailboxMessage, {
+  foreignKey: "folderId",
+  onDelete: "CASCADE",
+});
+MailboxMessage.belongsTo(MailboxFolder, {
+  foreignKey: "folderId",
+});
+
+// Senders ↔ Folders/Messages (Polymorphic)
+const senderModels = [GmailSender, OutlookSender, SmtpSender];
+
+senderModels.forEach((Model) => {
+  Model.hasMany(MailboxFolder, {
+    foreignKey: "senderId",
+    constraints: false,
+    as: "folders",
+  });
+  MailboxFolder.belongsTo(Model, {
+    foreignKey: "senderId",
+    constraints: false,
+  });
+
+  Model.hasMany(MailboxMessage, {
+    foreignKey: "senderId",
+    constraints: false,
+    as: "mailboxMessages",
+  });
+  MailboxMessage.belongsTo(Model, {
+    foreignKey: "senderId",
+    constraints: false,
+  });
+});
 /* =====================================================
    HELPER FUNCTIONS
 ===================================================== */
@@ -390,4 +430,6 @@ export {
   CrmStage,
   Lead,
   Integration,
+  MailboxFolder,
+  MailboxMessage,
 };

@@ -10,7 +10,7 @@ import SenderHealth from "../models/sender-health.model.js";
 import CampaignSend from "../models/campaign-send.model.js";
 import CampaignRecipient from "../models/campaign-recipient.model.js";
 
-import { getChannel } from "../queues/rabbit.js";
+import { getRabbitChannel as getChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
 import { mtaDetectorCache } from "../services/mta-detector-cache.service.js";
 import { EmailProvider } from "../enums/email-provider.enum.js";

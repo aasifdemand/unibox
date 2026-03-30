@@ -14,6 +14,9 @@ import {
 } from "../utils/redis-client.js";
 import { withRateLimit, clearMailboxLimiter } from "../utils/rate-limiter.js";
 import util from "util";
+import { MailboxFolder, MailboxMessage } from "../models/index.js";
+import { queueMailboxSync } from "../queues/mailbox.queue.js";
+import { Op } from "sequelize";
 import {
   createImapConnection,
   resolveFolder,
@@ -149,7 +152,64 @@ async function fetchSmtpMessagesForFolder(req, res, folder) {
       pageSize,
     );
 
-    // Check cache first
+    // 1. Try to fetch from local database first
+    const localFolder = await MailboxFolder.findOne({
+      where: { senderId: mailboxId, [Op.or]: [{ providerFolderId: folder }, { name: folder }] }
+    });
+
+    if (localFolder) {
+      let pageNum = currentPage;
+
+      // Extract from page-token if provided
+      if (typeof req.query.page === 'string' && req.query.page.startsWith('page-')) {
+        pageNum = parseInt(req.query.page.split('-')[1]) || currentPage;
+      }
+
+      const offset = (pageNum - 1) * pageSize;
+
+      const [localMessages, totalCount] = await Promise.all([
+        MailboxMessage.findAll({
+          where: { folderId: localFolder.id },
+          order: [['date', 'DESC']],
+          limit: pageSize,
+          offset: offset,
+        }),
+        MailboxMessage.count({ where: { folderId: localFolder.id } })
+      ]);
+
+      if (localMessages.length > 0) {
+        const hasMore = totalCount > (offset + pageSize);
+        return res.json({
+          success: true,
+          fromCache: true,
+          isLocal: true,
+          data: {
+            messages: localMessages.map(m => ({
+              id: m.providerMessageId,
+              uid: parseInt(m.providerMessageId),
+              subject: m.subject,
+              from: m.from,
+              to: m.to,
+              date: m.date,
+              get internalDate() { return new Date(this.date).getTime(); },
+              snippet: m.snippet,
+              isRead: m.isRead,
+            })),
+            totalCount: totalCount,
+            currentPage: pageNum,
+            totalPages: Math.ceil(totalCount / pageSize),
+            folder,
+            limit: pageSize,
+            hasMore: hasMore,
+          }
+        });
+      }
+    }
+
+    // 2. Trigger background sync
+    queueMailboxSync(mailboxId, 'smtp');
+
+    // 3. Check Redis cache first (Legacy fallback)
     const cached = await getCachedData(cacheKey);
     if (cached) {
       return res.json({
@@ -280,9 +340,26 @@ async function fetchSmtpMessagesForFolder(req, res, folder) {
   });
 }
 
-// GET SMTP MESSAGES - uses folder from query param (default: INBOX)
+// GET SMTP MESSAGES - uses folder from query param (no default)
 export const getSmtpMessages = asyncHandler(async (req, res) => {
-  const folder = req.query.folder || "INBOX";
+  const { folder } = req.query;
+
+  if (!folder) {
+    return res.json({
+      success: true,
+      data: {
+        messages: [],
+        totalCount: 0,
+        currentPage: 1,
+        totalPages: 0,
+        folder: null,
+        limit: 10,
+        hasMore: false,
+      },
+      message: "No folder selected"
+    });
+  }
+
   return fetchSmtpMessagesForFolder(req, res, folder);
 });
 
@@ -325,6 +402,38 @@ export const getSmtpFolders = asyncHandler(async (req, res) => {
   return withRateLimit(mailboxId, "smtp", async () => {
     const cacheKey = generateCacheKey("smtp", mailboxId, "folders");
 
+    // 1. Try local DB first
+    const localFolders = await MailboxFolder.findAll({
+      where: { senderId: mailboxId }
+    });
+
+    if (localFolders.length > 0) {
+      return res.json({
+        success: true,
+        fromCache: true,
+        isLocal: true,
+        data: {
+          folders: localFolders.map(f => ({
+            id: f.providerFolderId,
+            name: f.name,
+            fullPath: f.providerFolderId,
+            folderType: f.folderType,
+            totalCount: f.totalCount || 0,
+            unreadCount: f.unreadCount || 0,
+          })),
+          flatList: localFolders.map(f => ({
+            id: f.providerFolderId,
+            name: f.name,
+            folderType: f.folderType,
+          }))
+        }
+      });
+    }
+
+    // 2. Trigger sync
+    queueMailboxSync(mailboxId, 'smtp');
+
+    // 3. Check Redis cache first (Legacy fallback)
     const cached = await getCachedData(cacheKey);
     if (cached) {
       return res.json({ success: true, data: cached, fromCache: true });
@@ -562,6 +671,19 @@ export const deleteSmtpMessage = asyncHandler(async (req, res) => {
         "\\Deleted",
       ]);
       await util.promisify(imap.expunge).bind(imap)();
+
+      // Instant DB Sync: Remove from database
+      try {
+        await MailboxMessage.destroy({
+          where: { 
+            senderId: mailboxId, 
+            providerMessageId: `imap-${mailboxId}-${messageId}` 
+          }
+        });
+      } catch (dbError) {
+        console.error("SMTP delete DB sync error:", dbError);
+      }
+
       await deleteCachedData(generateCacheKey("smtp", mailboxId, "*"));
       res.json({ success: true, message: "Message deleted successfully" });
     } finally {
@@ -639,27 +761,32 @@ export const syncSmtpMailbox = asyncHandler(async (req, res) => {
       } catch (err) { }
     }
 
+    // 2. Queue full background sync
+    await queueMailboxSync(mailboxId, "smtp");
+
+    // 3. Update last sync timestamp
     const updateData = { lastInboxSyncAt: new Date() };
     if (folder.toUpperCase() === "SENT") updateData.lastSentSyncAt = new Date();
     if (folder.toUpperCase() === "DRAFTS")
       updateData.lastDraftsSyncAt = new Date();
     await sender.update(updateData);
 
+    // 4. Invalidate cache for this mailbox
     await Promise.all([
       deleteCachedData(
-        generateCacheKey("smtp", mailboxId, "messages", folder, "*"),
+        generateCacheKey("smtp", mailboxId, "messages", "*"),
       ),
       deleteCachedData(generateCacheKey("smtp", mailboxId, "folders")),
     ]);
 
-    // 🔥 Update reputation score immediately on manual sync
+    // 5. Update reputation score immediately on manual sync
     await senderHealthService.evaluateSender(mailboxId, "smtp").catch(err => {
       console.error(`[Reputation Update Failed] SMTP ${mailboxId}:`, err.message);
     });
 
     res.json({
       success: true,
-      message: `Mailbox synced successfully (${folder})`,
+      message: `Mailbox sync triggered successfully for ${folder}`,
       data: {
         syncedAt: new Date(),
         folder,

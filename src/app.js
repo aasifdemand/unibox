@@ -3,6 +3,7 @@ import cookieParser from "cookie-parser";
 import passport from "passport";
 import "./config/passportgoogle-oauth.js";
 import "./config/passport-microsoft.config.js";
+import "./config/passport-linkedin.config.js";
 import swaggerUi from "swagger-ui-express";
 import { swaggerSpec } from "./utils/swagger.js";
 import authRoutes from "./routes/auth.route.js";

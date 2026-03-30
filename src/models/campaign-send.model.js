@@ -47,6 +47,7 @@ const CampaignSend = sequelize.define(
       { unique: true, fields: ["campaignId", "recipientId", "step"] },
       { fields: ["sentAt"] },
       { fields: ["status"] },
+      { name: "campaign_sends_stats_idx", fields: ["campaignId", "status"] },
     ],
   },
 );

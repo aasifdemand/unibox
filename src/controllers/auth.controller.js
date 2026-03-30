@@ -1,5 +1,6 @@
 import AppError from "../utils/app-error.js";
-import { genToken } from "../helpers/gen-token.js";
+import { genAccessToken, genRefreshToken } from "../helpers/gen-token.js";
+import jwt from "jsonwebtoken";
 import { comparePassword, hashPassword } from "../helpers/hash-password.js";
 import User from "../models/user.model.js";
 import { asyncHandler } from "../helpers/async-handler.js";
@@ -7,6 +8,29 @@ import { sendEmail } from "../utils/send-email.js";
 import crypto from "node:crypto";
 import { Op } from "sequelize";
 import { generateVerificationOtp } from "../helpers/gen-verification-otp.js";
+
+const setTokenCookies = (res, user) => {
+  const accessToken = genAccessToken(user.id);
+  const refreshToken = genRefreshToken(user.id);
+
+  // Set Access Token (Short-lived)
+  res.cookie("access_token", accessToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax", // Better for OAuth redirects
+    maxAge: 15 * 60 * 1000, // 15 minutes
+  });
+
+  // Set Refresh Token (Long-lived)
+  res.cookie("refresh_token", refreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+  });
+
+  return { accessToken, refreshToken };
+};
 
 export const signup = asyncHandler(async (req, res) => {
   const { name, email, password } = req.body;
@@ -99,15 +123,12 @@ export const verifyAccount = asyncHandler(async (req, res) => {
   user.verificationOtpExpires = null;
   await user.save();
 
-  // Generate token and log user in
-  const token = genToken(user.id);
+  // Generate tokens and set cookies
+  const { refreshToken } = setTokenCookies(res, user);
 
-  res.cookie("access_token", token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "strict",
-    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-  });
+  // Store refresh token hash in DB
+  user.refreshToken = refreshToken;
+  await user.save();
 
   res.ok({
     message: "Email verified successfully",
@@ -205,14 +226,9 @@ export const login = asyncHandler(async (req, res) => {
     throw new AppError("Invalid credentials", 401);
   }
 
-  const token = genToken(user.id);
-
-  res.cookie("access_token", token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "strict",
-    maxAge: 7 * 24 * 60 * 60 * 1000,
-  });
+  const { refreshToken } = setTokenCookies(res, user);
+  user.refreshToken = refreshToken;
+  await user.save();
 
   res.ok({
     message: "Login successful",
@@ -232,28 +248,27 @@ export const googleCallback = asyncHandler(async (req, res) => {
   }
 
   const user = req.user;
-  const token = genToken(user.id);
-
-  res.cookie("access_token", token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "strict",
-    maxAge: 7 * 24 * 60 * 60 * 1000,
-  });
+  const { refreshToken } = setTokenCookies(res, user);
+  user.refreshToken = refreshToken;
+  await user.save();
 
   res.redirect(`${process.env.FRONTEND_URL}/dashboard`);
 });
 
 export const microsoftCallback = asyncHandler(async (req, res) => {
   const user = req.user;
-  const token = genToken(user.id);
+  const { refreshToken } = setTokenCookies(res, user);
+  user.refreshToken = refreshToken;
+  await user.save();
+  res.redirect(`${process.env.FRONTEND_URL}/dashboard`);
+});
 
-  res.cookie("access_token", token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "strict",
-    maxAge: 7 * 24 * 60 * 60 * 1000,
-  });
+export const linkedinCallback = asyncHandler(async (req, res) => {
+  const user = req.user;
+  const { refreshToken } = setTokenCookies(res, user);
+  user.refreshToken = refreshToken;
+  await user.save();
+
   res.redirect(`${process.env.FRONTEND_URL}/dashboard`);
 });
 
@@ -276,7 +291,13 @@ export const logout = asyncHandler(async (req, res) => {
 
   res.clearCookie("access_token", {
     httpOnly: true,
-    sameSite: "strict",
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+  });
+
+  res.clearCookie("refresh_token", {
+    httpOnly: true,
+    sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
   });
 
@@ -358,4 +379,37 @@ export const resetPassword = asyncHandler(async (req, res) => {
   res.ok({
     message: "Password reset successful",
   });
+});
+
+export const refreshToken = asyncHandler(async (req, res) => {
+  const refreshToken = req.cookies?.refresh_token;
+
+  if (!refreshToken) {
+    throw new AppError("No refresh token provided", 401);
+  }
+
+  try {
+    const decoded = jwt.verify(
+      refreshToken,
+      process.env.REFRESH_TOKEN_SECRET || process.env.JWT_SECRET
+    );
+
+    const user = await User.findByPk(decoded.id);
+
+    if (!user || user.refreshToken !== refreshToken) {
+      throw new AppError("Invalid refresh token", 401);
+    }
+
+    // Generate new tokens (Rotation)
+    const { refreshToken: newRefreshToken } = setTokenCookies(res, user);
+    
+    // Save new refresh token in DB
+    user.refreshToken = newRefreshToken;
+    await user.save();
+
+    res.ok({ message: "Token refreshed successfully" });
+  } catch (error) {
+    console.error("Refresh token error:", error.message);
+    throw new AppError("Invalid or expired refresh token", 401);
+  }
 });

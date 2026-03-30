@@ -38,7 +38,13 @@ const User = sequelize.define(
     googleId: {
       type: DataTypes.STRING,
       unique: true,
-      allowNull: true, // Explicitly set allowNull
+      allowNull: true,
+    },
+
+    linkedinId: {
+      type: DataTypes.STRING,
+      unique: true,
+      allowNull: true,
     },
 
     role: {
@@ -83,9 +89,15 @@ const User = sequelize.define(
 
     // Add account type to easily distinguish
     authType: {
-      type: DataTypes.ENUM("local", "google", "microsoft"),
+      type: DataTypes.ENUM("local", "google", "microsoft", "linkedin"),
       defaultValue: "local",
       allowNull: false,
+    },
+
+    // Refresh token hash for secure rotation
+    refreshToken: {
+      type: DataTypes.TEXT,
+      allowNull: true,
     },
   },
   {
@@ -102,6 +114,9 @@ const User = sequelize.define(
         fields: ["googleId"],
       },
       {
+        fields: ["linkedinId"],
+      },
+      {
         fields: ["authType"],
       },
     ],
@@ -111,6 +126,8 @@ const User = sequelize.define(
         // Set auth type based on provider
         if (user.googleId) {
           user.authType = "google";
+        } else if (user.linkedinId) {
+          user.authType = "linkedin";
         }
       },
     },

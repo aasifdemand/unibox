@@ -7,8 +7,7 @@ import MailComposer from "nodemailer/lib/mail-composer/index.js";
 import { randomUUID } from "crypto";
 import axios from "axios";
 import dns from "dns/promises";
-import fs from "fs";
-import path from "path";
+
 
 import Email from "../models/email.model.js";
 import GmailSender from "../models/gmail-sender.model.js";
@@ -24,15 +23,10 @@ import SenderHealth from "../models/sender-health.model.js";
 import { smtpWarmupService } from "../services/smtp-warmup.service.js";
 import { syncLead } from "../services/crm-sync.service.js";
 import { syncLeadToAllCRMs } from "../services/crm-sync.provider.js";
-import { getChannel } from "../queues/rabbit.js";
+import { getRabbitChannel as getChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
 import { refreshGoogleToken } from "../utils/refresh-google-token.js";
 import { getValidMicrosoftToken } from "../utils/get-valid-microsoft-token.js";
-import {
-  createImapConnection,
-  resolveFolder,
-  appendToFolder,
-} from "../utils/imap-helper.js";
 
 import { HttpsProxyAgent } from "https-proxy-agent";
 
@@ -354,57 +348,23 @@ async function startWorker() {
             await transporter.sendMail(mailOptions);
 
             // 📤 APPEND TO SENT FOLDER (SMTP Manual persistence)
+            // 📤 OFFLOAD IMAP APPEND (Async offload for throughput)
             try {
-              log("DEBUG", "📥 Appending automated SMTP email to Sent folder", {
-                senderId: sender.id,
-              });
               const composer = new MailComposer(mailOptions);
               const messageBuffer = await composer.compile().build();
-
-              let imapForAppend;
-              try {
-                imapForAppend = await createImapConnection(sender, null);
-                const resolvedSent = await resolveFolder(
-                  imapForAppend,
-                  sender,
-                  "SENT",
-                );
-                await appendToFolder(
-                  imapForAppend,
-                  resolvedSent,
-                  messageBuffer,
-                );
-                log("INFO", "✅ Automated SMTP email appended to Sent folder", {
-                  senderId: sender.id,
-                  folder: resolvedSent,
-                });
-
-                // 🧹 CLEAR CACHE so UI updates
-                const cachePattern = `mailbox:smtp:${sender.id}:messages:*`;
-                const keys = await redis.keys(cachePattern);
-                if (keys.length > 0) await redis.del(keys);
-              } catch (imapErr) {
-                log(
-                  "ERROR",
-                  "❌ Failed to append automated SMTP email to Sent folder",
-                  {
-                    senderId: sender.id,
-                    error: imapErr.message,
-                  },
-                );
-              } finally {
-                if (imapForAppend) {
-                  try {
-                    imapForAppend.end();
-                  } catch (e) {
-                    console.log(e);
-                  }
-                }
-              }
+              
+              channel.sendToQueue(
+                QUEUES.EMAIL_APPEND_SENT,
+                Buffer.from(JSON.stringify({ 
+                  senderId: sender.id, 
+                  messageBuffer: messageBuffer.toString("base64"),
+                  senderType: "smtp"
+                })),
+                { persistent: true }
+              );
+              log("DEBUG", "📤 Offloaded IMAP append to queue", { senderId: sender.id });
             } catch (composerErr) {
-              log("ERROR", "❌ Failed to compose MIME for IMAP append", {
-                error: composerErr.message,
-              });
+              log("ERROR", "❌ Failed to offload IMAP append", { error: composerErr.message });
             }
           } catch (smtpErr) {
             // Evict cached transporter on auth/connection errors so next send gets a fresh one
@@ -585,11 +545,11 @@ async function startWorker() {
 
         // 🏛️ SYNC LEAD TO CRM
         // Internal
-        syncLead(emailRecord.userId, emailRecord.recipientEmail, "sent").catch(e => 
+        syncLead(emailRecord.userId, emailRecord.recipientEmail, "sent").catch(e =>
           log("ERROR", "Failed to sync lead to CRM", { error: e.message })
         );
         // External
-        syncLeadToAllCRMs(emailRecord.userId, emailRecord.recipientEmail, "sent").catch(e => 
+        syncLeadToAllCRMs(emailRecord.userId, emailRecord.recipientEmail, "sent").catch(e =>
           log("ERROR", "Failed to sync lead to external CRM", { error: e.message })
         );
 

@@ -1,9 +1,9 @@
-import { getChannel } from "../queues/rabbit.js";
+import { getRabbitChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
 
 export const enqueueEmailVerification = async (batchId) => {
   try {
-    const channel = await getChannel();
+    const channel = await getRabbitChannel();
     await channel.assertQueue(QUEUES.EMAIL_VERIFY, { durable: true });
 
     const message = JSON.stringify({

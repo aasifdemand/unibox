@@ -66,6 +66,7 @@ const CampaignRecipient = sequelize.define(
       { fields: ["email"] },
       { fields: ["status"] },
       { unique: true, fields: ["campaignId", "email"] },
+      { name: "campaign_recipients_scheduler_idx", fields: ["campaignId", "status", "nextRunAt"] },
     ],
   }
 );

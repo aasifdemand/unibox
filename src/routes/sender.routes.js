@@ -18,7 +18,8 @@ import GmailSender from "../models/gmail-sender.model.js";
 import OutlookSender from "../models/outlook-sender.model.js";
 import passportGoogle from "../config/passportgoogle-senders.js";
 import passportMicrosoft from "../config/passport-microsoft.config.js";
-import {upload} from "../middlewares/upload.middleware.js";
+import { queueMailboxSync } from "../queues/mailbox.queue.js";
+
 
 /**
  * @swagger
@@ -275,6 +276,9 @@ router.get(
         });
       }
 
+      // Trigger initial sync
+      queueMailboxSync(sender.id, "gmail").catch(console.error);
+
       const frontendUrl = process.env.FRONTEND_URL || "http://localhost:8080";
       const cleanUrl = frontendUrl.endsWith("/")
         ? frontendUrl.slice(0, -1)
@@ -418,6 +422,9 @@ router.get(
           lastUsedAt: new Date(),
         });
       }
+
+      // Trigger initial sync
+      queueMailboxSync(sender.id, "outlook").catch(console.error);
 
       const frontendUrl = process.env.FRONTEND_URL || "http://localhost:8080";
       const cleanUrl = frontendUrl.endsWith("/")

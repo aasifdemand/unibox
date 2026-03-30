@@ -12,6 +12,9 @@ import {
 } from "../utils/redis-client.js";
 import { withRateLimit, clearMailboxLimiter } from "../utils/rate-limiter.js";
 import { senderHealthService } from "../services/sender-health.service.js";
+import { MailboxFolder, MailboxMessage } from "../models/index.js";
+import { queueMailboxSync } from "../queues/mailbox.queue.js";
+import { Op } from "sequelize";
 
 // Cache TTLs (in seconds)
 const CACHE_TTL = {
@@ -60,7 +63,21 @@ const getGmailClient = async (sender) => {
 export const getGmailMessages = asyncHandler(async (req, res) => {
   const { mailboxId } = req.params;
   const userId = req.user.id;
-  const { pageToken, maxResults = 10, labelIds = ["INBOX"] } = req.query;
+  const { pageToken, maxResults = 10, labelIds } = req.query;
+
+  if (!labelIds) {
+    return res.json({
+      success: true,
+      data: {
+        messages: [],
+        nextPageToken: null,
+        totalCount: 0,
+        page: 1,
+        totalPages: 0,
+      },
+      message: "No folder selected"
+    });
+  }
 
   const sender = await GmailSender.findOne({
     where: { id: mailboxId, userId, isVerified: true },
@@ -84,7 +101,64 @@ export const getGmailMessages = asyncHandler(async (req, res) => {
       max,
     );
 
-    // Try cache only for first page
+    // 1. Try to fetch from local database first (Check folder then messages)
+    const labelId = Array.isArray(labelIds) ? labelIds[0] : labelIds;
+    const localFolder = await MailboxFolder.findOne({
+      where: { senderId: mailboxId, [Op.or]: [{ providerFolderId: labelId }, { folderType: labelId.toLowerCase() }] }
+    });
+
+    if (localFolder) {
+    let page = parseInt(req.query.page) || 1;
+    // If pageToken is a virtual page token (e.g., "page-2"), parse it
+    if (pageToken && pageToken.startsWith("page-")) {
+      const p = parseInt(pageToken.split("-")[1]);
+      if (!isNaN(p)) page = p;
+    }
+
+    const offset = (Math.max(1, page) - 1) * max;
+      
+      const [localMessages, totalCount] = await Promise.all([
+        MailboxMessage.findAll({
+          where: { folderId: localFolder.id },
+          order: [['date', 'DESC']],
+          limit: max,
+          offset: offset,
+        }),
+        MailboxMessage.count({ where: { folderId: localFolder.id } })
+      ]);
+
+      if (localMessages.length > 0) {
+        const hasMore = totalCount > offset + max;
+        return res.json({
+          success: true,
+          fromCache: true,
+          isLocal: true,
+          data: {
+            messages: localMessages.map(m => ({
+              id: m.providerMessageId,
+              threadId: m.providerThreadId,
+              snippet: m.snippet,
+              subject: m.subject,
+              from: m.from,
+              to: m.to,
+              date: m.date,
+              isRead: m.isRead,
+              payload: { headers: [] } 
+            })),
+            nextPageToken: hasMore ? `page-${page + 1}` : null,
+            resultSizeEstimate: totalCount,
+            totalCount,
+            page: page,
+            totalPages: Math.ceil(totalCount / max),
+          }
+        });
+      }
+    }
+
+    // 2. Trigger background sync
+    queueMailboxSync(mailboxId, 'gmail');
+
+    // 3. Try Redis cache only for first page (Legacy fallback)
     if (!pageToken) {
       const cached = await getCachedData(cacheKey);
       if (cached) {
@@ -470,7 +544,30 @@ export const getGmailLabels = asyncHandler(async (req, res) => {
   return withRateLimit(mailboxId, "gmail", async () => {
     const cacheKey = generateCacheKey("gmail", mailboxId, "labels");
 
-    // Try cache first
+    // 1. Try local DB first
+    const localFolders = await MailboxFolder.findAll({
+      where: { senderId: mailboxId }
+    });
+
+    if (localFolders.length > 0) {
+      return res.json({
+        success: true,
+        fromCache: true,
+        isLocal: true,
+        data: localFolders.map(f => ({
+          id: f.providerFolderId,
+          name: f.name,
+          folderType: f.folderType,
+          totalCount: f.totalCount || 0,
+          unreadCount: f.unreadCount || 0,
+        }))
+      });
+    }
+
+    // 2. Trigger sync
+    queueMailboxSync(mailboxId, 'gmail');
+
+    // 3. Try Redis cache first (Legacy fallback)
     const cached = await getCachedData(cacheKey);
     if (cached) {
       console.log(`[CACHE HIT] Gmail labels for ${mailboxId}`);
@@ -753,7 +850,28 @@ export const deleteGmailMessage = asyncHandler(async (req, res) => {
 
         await sender.update({ lastUsedAt: new Date() });
 
-        // Invalidate all caches for this mailbox
+        // 1. Instant DB Sync: Update folder to TRASH
+        try {
+          const trashFolder = await MailboxFolder.findOne({
+            where: { senderId: mailboxId, folderType: 'trash' }
+          });
+          
+          if (trashFolder) {
+            await MailboxMessage.update(
+              { folderId: trashFolder.id },
+              { where: { senderId: mailboxId, providerMessageId: messageId } }
+            );
+          } else {
+            // Fallback: delete if trash folder not found in local DB
+            await MailboxMessage.destroy({
+              where: { senderId: mailboxId, providerMessageId: messageId }
+            });
+          }
+        } catch (dbError) {
+          console.error("Gmail delete DB sync error:", dbError);
+        }
+
+        // 2. Invalidate all caches for this mailbox
         await deleteCachedData(generateCacheKey("gmail", mailboxId, "*"));
 
         res.json({
@@ -850,6 +968,15 @@ export const permanentlyDeleteGmailMessage = asyncHandler(async (req, res) => {
 
       await sender.update({ lastUsedAt: new Date() });
 
+      // Instant DB Sync: Permanent removal
+      try {
+        await MailboxMessage.destroy({
+          where: { senderId: mailboxId, providerMessageId: messageId }
+        });
+      } catch (dbError) {
+        console.error("Gmail permanent delete DB sync error:", dbError);
+      }
+
       // Invalidate all caches for this mailbox
       await deleteCachedData(generateCacheKey("gmail", mailboxId, "*"));
 
@@ -899,36 +1026,39 @@ export const syncGmailMailbox = asyncHandler(async (req, res) => {
   return withRateLimit(mailboxId, "gmail", async () => {
     const gmail = await getGmailClient(sender);
 
-    // Test connection by fetching one message from the specified folder
+    // 1. Test connection by fetching one message from the specified folder
     await gmail.users.messages.list({
       userId: "me",
       maxResults: 1,
       labelIds: [folderId],
     });
 
-    // Update last sync timestamp for the specific folder
+    // 2. Queue full background sync
+    await queueMailboxSync(mailboxId, "gmail");
+
+    // 3. Update last sync timestamp for the specific folder
     const updateData = { lastInboxSyncAt: new Date() };
     if (folderId === "SENT") updateData.lastSentSyncAt = new Date();
     if (folderId === "DRAFT") updateData.lastDraftsSyncAt = new Date();
 
     await sender.update(updateData);
 
-    // Invalidate cache for this folder
+    // 4. Invalidate cache for this folder
     await Promise.all([
       deleteCachedData(
-        generateCacheKey("gmail", mailboxId, "messages", folderId, "*"),
+        generateCacheKey("gmail", mailboxId, "messages", "*"),
       ),
       deleteCachedData(generateCacheKey("gmail", mailboxId, "labels")),
     ]);
 
-    // 🔥 Update reputation score immediately on manual sync
+    // 5. Update reputation score immediately on manual sync
     await senderHealthService.evaluateSender(mailboxId, "gmail").catch(err => {
       console.error(`[Reputation Update Failed] Gmail ${mailboxId}:`, err.message);
     });
 
     res.json({
       success: true,
-      message: `Mailbox synced successfully (${folderId})`,
+      message: `Mailbox sync triggered successfully for ${folderId}`,
       data: { syncedAt: new Date(), folderId },
     });
   });

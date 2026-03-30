@@ -1,17 +1,20 @@
 import { Router } from "express";
 import passport from "../config/passportgoogle-oauth.js";
+import passportLinkedin from "../config/passport-linkedin.config.js";
 import {
   forgotPassword,
   googleCallback,
   login,
   logout,
   microsoftCallback,
+  linkedinCallback,
   resendVerification,
   resetPassword,
   signup,
   verifyAccount,
+  refreshToken,
 } from "../controllers/auth.controller.js";
-import { asyncHandler } from "../helpers/async-handler.js";
+
 
 const router = Router();
 
@@ -95,6 +98,19 @@ router.post("/login", login);
  *         description: Logout successful
  */
 router.post("/logout", logout);
+
+/**
+ * @swagger
+ * /api/v1/auth/refresh-token:
+ *   post:
+ *     summary: Refresh access token
+ *     tags: [Auth]
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Token refreshed successfully
+ */
+router.post("/refresh-token", refreshToken);
 
 // =========================
 // PASSWORD RESET
@@ -229,12 +245,48 @@ router.get("/microsoft", (req, res, next) => {
  */
 router.get(
   "/microsoft/callback",
-  passport.authenticate("microsoft", {
+  microsoftCallback,
+);
+
+/**
+ * @swagger
+ * /api/v1/auth/linkedin:
+ *   get:
+ *     summary: Login with LinkedIn (User Authentication)
+ *     tags: [Auth]
+ *     security: []
+ *     responses:
+ *       302:
+ *         description: Redirects to LinkedIn OAuth
+ */
+router.get(
+  "/linkedin",
+  passportLinkedin.authenticate("linkedin", {
+    scope: ["openid", "profile", "email"],
+    session: false,
+  }),
+);
+
+/**
+ * @swagger
+ * /api/v1/auth/linkedin/callback:
+ *   get:
+ *     summary: LinkedIn OAuth callback (User Authentication)
+ *     tags: [Auth]
+ *     security: []
+ *     responses:
+ *       302:
+ *         description: Redirects to frontend
+ */
+router.get(
+  "/linkedin/callback",
+  passportLinkedin.authenticate("linkedin", {
     session: false,
     failureRedirect: `${process.env.FRONTEND_URL}/auth/login?error=oauth_failed`,
   }),
-  microsoftCallback,
+  linkedinCallback,
 );
+
 
 /**
  * @swagger

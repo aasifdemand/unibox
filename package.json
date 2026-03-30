@@ -13,6 +13,8 @@
     "verifier": "node src/workers/email-verifier.worker.js",
     "replier": "node src/workers/reply-ingestion.worker.js",
     "blacklist": "node src/workers/blacklist-monitoring.worker.js",
+    "mailbox": "node src/workers/mailbox-sync.worker.js",
+    "imap-append": "node src/workers/imap-append.worker.js",
     "lint": "eslint . --max-warnings=0",
     "lint:fix": "eslint . --fix"
   },
@@ -45,6 +47,8 @@
     "p-limit": "^7.3.0",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
+    "passport-linkedin": "^1.0.0",
+    "passport-linkedin-oauth2": "^2.0.0",
     "passport-microsoft": "^2.1.0",
     "pg": "^8.16.3",
     "pg-hstore": "^2.3.4",

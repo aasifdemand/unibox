@@ -10,7 +10,7 @@ import Email from "../models/email.model.js";
 import GlobalEmailRegistry from "../models/global-email-registry.model.js";
 import { getSenderWithType } from "../models/index.js";
 
-import { getChannel } from "../queues/rabbit.js";
+import { getRabbitChannel as getChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
 import { renderTemplate } from "../utils/template-renderer.js";
 import { injectTracking } from "../utils/tracking-injector.js";
@@ -82,7 +82,7 @@ async function startWorker() {
 
       try {
         const campaign = await Campaign.findByPk(campaignId);
-        
+
         // Pick sender for this send
         let senderIdToUse = campaign?.senderId;
         if (campaign?.senderIds && Array.isArray(campaign.senderIds) && campaign.senderIds.length > 0) {
@@ -229,7 +229,7 @@ async function startWorker() {
           // Weighted random selection
           const totalWeight = stepConfig.variants.reduce((sum, v) => sum + (v.weight || 1), 1); // +1 for default
           const pick = Math.random() * totalWeight;
-          
+
           let currentWeight = 1; // Default variant weight
           if (pick > currentWeight) {
             for (let i = 0; i < stepConfig.variants.length; i++) {
@@ -395,7 +395,7 @@ async function startWorker() {
             headers: { ...headers, "x-final-error": err.message },
             persistent: true
           });
-          
+
           log("FATAL", "💀 Message moved to DLQ", {
             campaignId,
             recipientId,

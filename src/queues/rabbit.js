@@ -3,7 +3,7 @@ import amqp from "amqplib";
 let connection;
 let channel;
 
-export async function getChannel() {
+export async function getRabbitChannel() {
   if (channel && connection) {
     try {
       // Basic check if connection is still healthy

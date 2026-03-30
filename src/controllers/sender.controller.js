@@ -1,7 +1,6 @@
 import { asyncHandler } from "../helpers/async-handler.js";
 import AppError from "../utils/app-error.js";
-import xlsx from "xlsx";
-import { promises as fsPromises } from "fs";
+
 
 import GmailSender from "../models/gmail-sender.model.js";
 import OutlookSender from "../models/outlook-sender.model.js";
@@ -12,8 +11,8 @@ import { testOutlookConnection } from "../utils/outlook-tester.js";
 
 import { verifySmtp, verifyImap } from "../services/smtp-imap.service.js";
 import { senderHealthService } from "../services/sender-health.service.js";
-import pLimit from "p-limit";
-import { getNextProxy } from "../utils/proxy-fetcher.js";
+import { queueMailboxSync } from "../queues/mailbox.queue.js";
+
 
 export const createSender = asyncHandler(async (req, res) => {
   const {
@@ -118,8 +117,9 @@ export const createSender = asyncHandler(async (req, res) => {
     isActive: true,
   });
 
-  // Run health check async
+  // Run health check and trigger initial mailbox sync async
   senderHealthService.evaluateSender(sender.id).catch(console.error);
+  queueMailboxSync(sender.id, "smtp").catch(console.error);
 
   res.status(201).json({
     success: true,

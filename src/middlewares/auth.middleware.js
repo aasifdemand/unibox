@@ -11,7 +11,10 @@ export const protect = async (req, res, next) => {
       return next(new AppError("Not authenticated", 401));
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = jwt.verify(
+      token,
+      process.env.ACCESS_TOKEN_SECRET
+    );
 
     const user = await User.findByPk(decoded.id, {
       attributes: { exclude: ["password"] },
@@ -47,7 +50,10 @@ export const protectOptional = async (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = jwt.verify(
+      token,
+      process.env.ACCESS_TOKEN_SECRET
+    );
     const user = await User.findByPk(decoded.id);
     req.user = user || null;
   } catch {

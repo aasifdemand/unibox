@@ -4,4 +4,6 @@ export const QUEUES = {
   EMAIL_SEND: "email.send",
   EMAIL_VERIFY: "email.verify",
   EMAIL_ROUTE: "email.route",
+  MAILBOX_SYNC: "mailbox.sync",
+  EMAIL_APPEND_SENT: "email.append_sent",
 };

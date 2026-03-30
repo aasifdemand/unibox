@@ -5,7 +5,7 @@ import axios from "axios";
 import GlobalEmailRegistry from "../models/global-email-registry.model.js";
 import ListUploadRecord from "../models/list-upload-record.model.js";
 import ListUploadBatch from "../models/list-upload-batch.model.js";
-import { getChannel } from "../queues/rabbit.js";
+import { getRabbitChannel as getChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
 import { Op } from "sequelize";
 

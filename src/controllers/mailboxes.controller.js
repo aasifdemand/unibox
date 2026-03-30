@@ -15,6 +15,8 @@ import {
 } from "../utils/redis-client.js";
 import { DeliveryGuard } from "../utils/delivery-guard.js";
 import SenderHealth from "../models/sender-health.model.js";
+import { MailboxFolder, MailboxMessage } from "../models/index.js";
+import { queueMailboxSync } from "../queues/mailbox.queue.js";
 
 const MAILBOX_CACHE_TTL = 1800; // 30 minutes
 
@@ -159,6 +161,44 @@ export const getGmailMessages = asyncHandler(async (req, res) => {
   });
   if (!sender) throw new AppError("Gmail mailbox not found", 404);
 
+  // 1. Try to fetch from local database first
+  const localFolder = await MailboxFolder.findOne({
+    where: { senderId: mailboxId, name: labelIds[0] || 'INBOX' }
+  });
+
+  if (localFolder) {
+    const localMessages = await MailboxMessage.findAll({
+      where: { folderId: localFolder.id },
+      order: [['date', 'DESC']],
+      limit: max,
+    });
+
+    if (localMessages.length > 0) {
+      return res.json({
+        success: true,
+        fromCache: true,
+        data: {
+          messages: localMessages.map(m => ({
+            id: m.providerMessageId,
+            snippet: m.snippet,
+            payload: {
+              headers: [
+                { name: 'Subject', value: m.subject },
+                { name: 'From', value: m.from },
+                { name: 'Date', value: m.date }
+              ]
+            }
+          })),
+          nextPageToken: null, // Local pagination to be improved
+        }
+      });
+    }
+  }
+
+  // 2. If no local data, trigger background sync
+  queueMailboxSync(mailboxId, 'gmail');
+
+  // 3. Fallback to direct fetch for first load
   const gmail = await getGmailClient(sender);
 
   let max = parseInt(maxResults);
@@ -179,10 +219,10 @@ export const getGmailMessages = asyncHandler(async (req, res) => {
         const message = await gmail.users.messages.get({
           userId: "me",
           id: msg.id,
-          format: "metadata", // Make sure this is "metadata" or "full"
+          format: "metadata",
           metadataHeaders: ["From", "To", "Subject", "Date"],
         });
-        messages.push(message.data); // This includes the snippet field
+        messages.push(message.data);
       } catch (err) {
         console.error("Failed to fetch message:", err.message);
       }
@@ -192,7 +232,7 @@ export const getGmailMessages = asyncHandler(async (req, res) => {
   res.json({
     success: true,
     data: {
-      messages, // messages array should contain objects with 'snippet' field
+      messages,
       nextPageToken: response.data.nextPageToken || null,
     },
   });
@@ -514,6 +554,43 @@ export const getOutlookMessages = asyncHandler(async (req, res) => {
   });
   if (!sender) throw new AppError("Outlook mailbox not found", 404);
 
+  // 1. Try to fetch from local database first
+  const localFolder = await MailboxFolder.findOne({
+    where: { senderId: mailboxId, [Op.or]: [{ providerFolderId: folderId }, { folderType: folderId }] }
+  });
+
+  if (localFolder) {
+    const localMessages = await MailboxMessage.findAll({
+      where: { folderId: localFolder.id },
+      order: [['date', 'DESC']],
+      limit: pageSize,
+    });
+
+    if (localMessages.length > 0) {
+      return res.json({
+        success: true,
+        fromCache: true,
+        data: {
+          messages: localMessages.map(m => ({
+            id: m.providerMessageId,
+            subject: m.subject,
+            from: { emailAddress: { address: m.from } },
+            receivedDateTime: m.date,
+            isRead: m.isRead,
+            bodyPreview: m.snippet,
+            conversationId: m.providerThreadId,
+          })),
+          nextSkipToken: null,
+          count: localMessages.length,
+        }
+      });
+    }
+  }
+
+  // 2. Trigger background sync
+  queueMailboxSync(mailboxId, 'outlook');
+
+  // 3. Fallback to direct fetch
   const token = await getOutlookToken(sender);
 
   let pageSize = parseInt(top);
