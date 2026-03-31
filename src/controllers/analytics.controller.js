@@ -235,7 +235,8 @@ export const getTimelineData = asyncHandler(async (req, res) => {
   let format;
   let count;
 
-  const now = dayjs(); // Using dayjs for easier date manipulation
+  const userTz = req.user.timezone || "UTC";
+  const now = dayjs().tz(userTz);
 
   switch (period) {
     case "day":
@@ -274,11 +275,15 @@ export const getTimelineData = asyncHandler(async (req, res) => {
       count = 7;
   }
 
+  // Timezone-aware grouping clause
+  const dateField = `("CampaignSend"."sentAt" AT TIME ZONE 'UTC' AT TIME ZONE '${userTz}')`;
+  const dateTrunc = Sequelize.fn("date_trunc", truncateBy, Sequelize.literal(dateField));
+
   const timeline = await CampaignSend.findAll({
     where: {
       sentAt: {
         [Op.ne]: null,
-        [Op.gte]: startDate.toDate(),
+        [Op.gte]: startDate.utc().toDate(), // DB is in UTC
       },
     },
     include: [
@@ -304,14 +309,7 @@ export const getTimelineData = asyncHandler(async (req, res) => {
       },
     ],
     attributes: [
-      [
-        Sequelize.fn(
-          "date_trunc",
-          truncateBy,
-          Sequelize.col("CampaignSend.sentAt"),
-        ),
-        "date",
-      ],
+      [dateTrunc, "date"],
       [
         Sequelize.fn(
           "COUNT",
@@ -332,30 +330,15 @@ export const getTimelineData = asyncHandler(async (req, res) => {
         "replies",
       ],
     ],
-    group: [
-      Sequelize.fn(
-        "date_trunc",
-        truncateBy,
-        Sequelize.col("CampaignSend.sentAt"),
-      ),
-    ],
-    order: [
-      [
-        Sequelize.fn(
-          "date_trunc",
-          truncateBy,
-          Sequelize.col("CampaignSend.sentAt"),
-        ),
-        "ASC",
-      ],
-    ],
+    group: [dateTrunc],
+    order: [[dateTrunc, "ASC"]],
     raw: true,
   });
 
   // Zero-padding logic
   const result = [];
   const dbDataMap = timeline.reduce((acc, item) => {
-    const key = dayjs(item.date).format(format);
+    const key = dayjs.tz(item.date, userTz).format(format);
     acc[key] = item;
     return acc;
   }, {});
@@ -579,6 +562,11 @@ export const getSenderStats = asyncHandler(async (req, res) => {
 export const getHourlyStats = asyncHandler(async (req, res) => {
   const userId = req.user.id;
 
+  const userTz = req.user.timezone || "UTC";
+  // Timezone-aware hour extraction
+  const hourField = `EXTRACT(HOUR FROM "CampaignSend"."sentAt" AT TIME ZONE 'UTC' AT TIME ZONE '${userTz}')`;
+  const hourAttr = [Sequelize.literal(hourField), "hour"];
+
   const hourly = await CampaignSend.findAll({
     where: {
       sentAt: { [Op.ne]: null },
@@ -591,16 +579,11 @@ export const getHourlyStats = asyncHandler(async (req, res) => {
       },
     ],
     attributes: [
-      [
-        Sequelize.fn("EXTRACT", Sequelize.literal("HOUR FROM \"sentAt\"")),
-        "hour",
-      ],
+      hourAttr,
       [Sequelize.fn("COUNT", Sequelize.col("CampaignSend.id")), "count"],
     ],
-    group: [Sequelize.fn("EXTRACT", Sequelize.literal("HOUR FROM \"sentAt\""))],
-    order: [
-      [Sequelize.fn("EXTRACT", Sequelize.literal("HOUR FROM \"sentAt\"")), "ASC"],
-    ],
+    group: [Sequelize.literal(hourField)],
+    order: [[Sequelize.literal(hourField), "ASC"]],
   });
 
   // Fill in missing hours

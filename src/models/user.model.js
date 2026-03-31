@@ -99,6 +99,17 @@ const User = sequelize.define(
       type: DataTypes.TEXT,
       allowNull: true,
     },
+
+    designation: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+
+    timezone: {
+      type: DataTypes.STRING,
+      defaultValue: "UTC",
+      allowNull: true,
+    },
   },
   {
     tableName: "users",

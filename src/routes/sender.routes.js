@@ -13,6 +13,7 @@ import {
   getSender,
   updateSender,
   bulkDeleteSenders,
+  bulkCreateSenders,
 } from "../controllers/sender.controller.js";
 import GmailSender from "../models/gmail-sender.model.js";
 import OutlookSender from "../models/outlook-sender.model.js";
@@ -96,6 +97,7 @@ const router = Router();
  *         description: Validation error
  */
 router.post("/create", protect, createSender);
+router.post("/bulk-create", protect, bulkCreateSenders);
 router.post("/bulk-delete", protect, bulkDeleteSenders);
 
 /**

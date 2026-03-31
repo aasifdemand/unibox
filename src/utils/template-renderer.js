@@ -1,19 +1,19 @@
 export function renderTemplate(template, variables = {}) {
   if (!template) return "";
 
-  // 0. Setup System Variables (Smartlead style)
+  // 0. Setup System Variables (Unibox style)
   const now = new Date();
   const hour = now.getHours();
   const timeOfDay = hour < 12 ? "morning" : hour < 18 ? "afternoon" : "evening";
   const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-  
+
   const systemVars = {
     sl_time_of_day: timeOfDay,
     sl_day_of_week: days[now.getDay()],
     sl_current_month: now.toLocaleString('default', { month: 'long' }),
     sl_current_date: now.toLocaleDateString(),
   };
-  
+
   const allVars = { ...systemVars, ...variables };
 
   // 1. Handle Spintax: {Option A|Option B|Option C}

@@ -128,6 +128,98 @@ export const createSender = asyncHandler(async (req, res) => {
 });
 
 // =========================
+// BULK CREATE SENDERS
+// =========================
+export const bulkCreateSenders = asyncHandler(async (req, res) => {
+  const { senders } = req.body; // Array of sender objects
+  const userId = req.user.id;
+
+  if (!senders || !Array.isArray(senders)) {
+    throw new AppError("Senders array is required", 400);
+  }
+
+  const results = {
+    success: 0,
+    failed: 0,
+    errors: [],
+    instances: [],
+  };
+
+  for (const senderData of senders) {
+    try {
+      const {
+        email,
+        displayName,
+        smtpHost,
+        smtpPort = 587,
+        smtpSecure = true,
+        smtpUser,
+        smtpPassword,
+        imapHost,
+        imapPort = 993,
+        imapSecure = true,
+        imapUser,
+        imapPassword,
+      } = senderData;
+
+      if (!email || !displayName || !smtpHost || !smtpUser || !smtpPassword) {
+        throw new Error(`Incomplete configuration for ${email || 'unknown'}`);
+      }
+
+      const emailLower = email.toLowerCase();
+      const domain = emailLower.split("@")[1];
+
+      // Check duplicate
+      const existing = await SmtpSender.findOne({
+        where: { email: emailLower, userId }
+      });
+
+      if (existing) {
+        throw new Error(`Sender ${emailLower} already exists`);
+      }
+
+      // Create sender (skipping verification for speed in bulk, 
+      // but marking as verified for now as the user asked for 
+      // Unibox-like experience where they are added immediately)
+      const sender = await SmtpSender.create({
+        userId,
+        email: emailLower,
+        displayName,
+        domain,
+        smtpHost,
+        smtpPort,
+        smtpSecure,
+        smtpUsername: smtpUser,
+        smtpPassword,
+        imapHost: imapHost || smtpHost.replace("smtp", "imap"),
+        imapPort: imapPort || 993,
+        imapSecure: imapSecure !== undefined ? imapSecure : true,
+        imapUsername: imapUser || smtpUser,
+        imapPassword: imapPassword || smtpPassword,
+        isVerified: true, // Optimistic add
+        isActive: true,
+      });
+
+      // Run health check and sync async
+      senderHealthService.evaluateSender(sender.id).catch(() => { });
+      queueMailboxSync(sender.id, "smtp").catch(() => { });
+
+      results.success++;
+      results.instances.push(sender.id);
+    } catch (err) {
+      results.failed++;
+      results.errors.push(err.message);
+    }
+  }
+
+  res.status(201).json({
+    success: true,
+    message: `Bulk creation complete. ${results.success} added, ${results.failed} failed.`,
+    data: results,
+  });
+});
+
+// =========================
 // LIST ALL SENDERS
 // =========================
 

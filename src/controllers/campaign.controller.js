@@ -247,9 +247,9 @@ export const createCampaign = asyncHandler(async (req, res) => {
     textBody: textBody || "",
     previewText: previewText || "",
     scheduledAt: scheduledAt
-      ? dayjs.tz(scheduledAt, timezone || "UTC").utc().toDate()
+      ? dayjs.tz(scheduledAt, timezone || req.user.timezone || "UTC").utc().toDate()
       : null,
-    timezone: timezone || "UTC",
+    timezone: timezone || req.user.timezone || "UTC",
     throttlePerMinute: throttlePerMinute || 10,
     trackOpens: trackOpens !== undefined ? trackOpens : true,
     trackClicks: trackClicks !== undefined ? trackClicks : true,
@@ -369,7 +369,7 @@ export const updateCampaign = asyncHandler(async (req, res) => {
   if (scheduledAt !== undefined)
     updates.scheduledAt = scheduledAt
       ? dayjs
-          .tz(scheduledAt, timezone || campaign.timezone || "UTC")
+          .tz(scheduledAt, timezone || campaign.timezone || req.user.timezone || "UTC")
           .utc()
           .toDate()
       : null;
