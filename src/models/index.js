@@ -410,6 +410,95 @@ export async function getUserSenders(userId) {
   };
 }
 
+/* =====================================================
+   ELASTICSEARCH SYNC HOOKS
+   Fire-and-forget: push a lightweight sync event to the ES_SYNC queue.
+   The es-sync worker handles the actual indexing asynchronously.
+===================================================== */
+
+import { getRabbitChannel } from "../queues/rabbit.js";
+import { QUEUES } from "../queues/queues.js";
+import { INDICES } from "../services/elasticsearch.service.js";
+
+function publishEsSync(action, index, id, doc = null) {
+  // Non-blocking — never throw into the model lifecycle
+  getRabbitChannel()
+    .then((ch) => {
+      const payload = { action, index, id, doc };
+      ch.sendToQueue(QUEUES.ES_SYNC, Buffer.from(JSON.stringify(payload)), { persistent: true });
+    })
+    .catch((err) => console.error("❌ ES sync publish failed:", err.message));
+}
+
+// ── MailboxMessage hooks ──────────────────────────────────────────────────────
+MailboxMessage.addHook("afterCreate", "esSyncCreate", (instance) => {
+  if (!instance.userId) return; // skip legacy rows without userId
+  publishEsSync("upsert", INDICES.MESSAGES, instance.id, {
+    id: instance.id,
+    userId: instance.userId,
+    senderId: instance.senderId,
+    senderType: instance.senderType,
+    folderId: instance.folderId,
+    providerMessageId: instance.providerMessageId,
+    providerThreadId: instance.providerThreadId,
+    subject: instance.subject,
+    from: instance.from,
+    to: instance.to,
+    snippet: instance.snippet,
+    isRead: instance.isRead,
+    hasAttachments: instance.hasAttachments,
+    date: instance.date,
+    createdAt: instance.createdAt,
+  });
+});
+
+MailboxMessage.addHook("afterUpdate", "esSyncUpdate", (instance) => {
+  if (!instance.userId) return; // skip legacy rows without userId
+  publishEsSync("upsert", INDICES.MESSAGES, instance.id, {
+    id: instance.id,
+    userId: instance.userId,
+    senderId: instance.senderId,
+    senderType: instance.senderType,
+    folderId: instance.folderId,
+    providerMessageId: instance.providerMessageId,
+    providerThreadId: instance.providerThreadId,
+    subject: instance.subject,
+    from: instance.from,
+    to: instance.to,
+    snippet: instance.snippet,
+    isRead: instance.isRead,
+    hasAttachments: instance.hasAttachments,
+    date: instance.date,
+    createdAt: instance.createdAt,
+  });
+});
+
+MailboxMessage.addHook("afterDestroy", "esSyncDelete", (instance) => {
+  publishEsSync("delete", INDICES.MESSAGES, instance.id);
+});
+
+// ── Email hooks (sent campaign emails) ───────────────────────────────────────
+Email.addHook("afterUpdate", "esSyncEmailUpdate", (instance) => {
+  // Only index once email is sent — avoids indexing drafts/queued records
+  if (!["sent", "opened", "clicked", "replied"].includes(instance.status)) return;
+  publishEsSync("upsert", INDICES.EMAILS, instance.id, {
+    id: instance.id,
+    userId: instance.userId,
+    campaignId: instance.campaignId,
+    senderId: instance.senderId,
+    senderType: instance.senderType,
+    recipientEmail: instance.recipientEmail,
+    subject: instance.subject,
+    textBody: instance.textBody,
+    status: instance.status,
+    sentAt: instance.sentAt,
+    openedAt: instance.openedAt,
+    clickedAt: instance.clickedAt,
+    repliedAt: instance.repliedAt,
+    createdAt: instance.createdAt,
+  });
+});
+
 export {
   User,
   GmailSender,
@@ -435,3 +524,4 @@ export {
   MailboxMessage,
   WarmupMessage,
 };
+

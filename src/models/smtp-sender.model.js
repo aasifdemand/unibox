@@ -222,6 +222,43 @@ const SmtpSender = sequelize.define(
       type: DataTypes.INTEGER,
       defaultValue: 0,
     },
+
+    /* =========================
+       CONFIGURATION & REFRESH
+    ========================= */
+    minTimeGap: {
+      type: DataTypes.INTEGER,
+      defaultValue: 1,
+    },
+
+    signature: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
+
+    bccEmail: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+
+    replyToAddress: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+
+    useCustomTrackingDomain: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+    },
+
+    customTrackingDomain: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    proxyUrl: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
   },
   {
     tableName: "smtp_senders",

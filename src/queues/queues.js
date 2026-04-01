@@ -6,4 +6,6 @@ export const QUEUES = {
   EMAIL_ROUTE: "email.route",
   MAILBOX_SYNC: "mailbox.sync",
   EMAIL_APPEND_SENT: "email.append_sent",
+  ES_SYNC: "es.sync",
 };
+

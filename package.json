@@ -17,6 +17,7 @@
     "imap-append": "node src/workers/imap-append.worker.js",
     "warmup": "node src/workers/active-warmup.worker.js",
     "warmup-monitor": "node src/workers/active-warmup-monitor.worker.js",
+    "es-sync": "node src/workers/elasticsearch-sync.worker.js",
     "lint": "eslint . --max-warnings=0",
     "lint:fix": "eslint . --fix"
   },
@@ -25,6 +26,7 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "@elastic/elasticsearch": "^7.17.14",
     "@socket.io/redis-adapter": "^8.3.0",
     "@socket.io/redis-emitter": "^5.1.0",
     "amqplib": "^0.10.9",
@@ -57,6 +59,7 @@
     "redis": "^5.10.0",
     "sequelize": "^6.37.7",
     "socket.io": "^4.8.3",
+    "socks-proxy-agent": "^10.0.0",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
     "xlsx": "^0.18.5"

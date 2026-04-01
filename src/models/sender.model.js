@@ -88,6 +88,10 @@ const Sender = sequelize.define(
       type: DataTypes.BOOLEAN,
       defaultValue: true,
     },
+    proxyUrl: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
   },
   {
     tableName: "senders",

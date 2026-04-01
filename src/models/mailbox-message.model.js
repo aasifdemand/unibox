@@ -9,6 +9,10 @@ const MailboxMessage = sequelize.define(
       defaultValue: DataTypes.UUIDV4,
       primaryKey: true,
     },
+    userId: {
+      type: DataTypes.UUID,
+      allowNull: true, // nullable for backward compat with existing rows
+    },
     senderId: {
       type: DataTypes.UUID,
       allowNull: false,

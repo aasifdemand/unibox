@@ -20,6 +20,7 @@ import notificationRoutes from "./routes/notification.routes.js";
 import aiRoutes from "./routes/ai.routes.js";
 import integrationRoutes from "./routes/integration.routes.js";
 import crmRoutes from "./routes/crm.routes.js";
+import searchRoutes from "./routes/search.routes.js";
 import { responseMiddleware } from "./middlewares/response.middleware.js";
 import errorHandler from "./middlewares/error.middleware.js";
 import path from "path";
@@ -103,6 +104,7 @@ app.use("/api/v1/notifications", notificationRoutes);
 app.use("/api/v1/crm", crmRoutes);
 app.use("/api/v1/ai", aiRoutes);
 app.use("/api/v1/integrations", integrationRoutes);
+app.use("/api/v1/search", searchRoutes);
 
 // swagger
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
