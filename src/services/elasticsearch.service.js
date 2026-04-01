@@ -59,19 +59,37 @@ export async function initIndices() {
   const es = getElasticsearchClient();
   if (!es) return;
 
-  const indices = [
-    { name: INDICES.MESSAGES, body: MESSAGE_MAPPING },
-    { name: INDICES.EMAILS,   body: EMAIL_MAPPING },
-  ];
+  try {
+    const indices = [
+      { name: INDICES.MESSAGES, body: MESSAGE_MAPPING },
+      { name: INDICES.EMAILS,   body: EMAIL_MAPPING },
+    ];
 
-  for (const { name, body } of indices) {
-    const { body: exists } = await es.indices.exists({ index: name });
-    if (!exists) {
-      await es.indices.create({ index: name, body });
-      console.log(`✅ ES index created: ${name}`);
+    for (const { name, body } of indices) {
+      const { body: exists } = await es.indices.exists({ index: name });
+      if (!exists) {
+        await es.indices.create({ index: name, body });
+        console.log(`✅ ES index created: ${name}`);
+      } else {
+        console.log(`✔️  ES index already exists: ${name}`);
+      }
     }
+  } catch (err) {
+    // ProductNotSupportedSecurityError usually means ES requires credentials
+    // or there is a proxy stripping the X-Elastic-Product header.
+    if (err.name === "ProductNotSupportedSecurityError") {
+      console.warn(
+        "⚠️  ES security error — the cluster may require credentials.\n" +
+        "   → Set ELASTICSEARCH_USERNAME + ELASTICSEARCH_PASSWORD in .env\n" +
+        "   → Or run: curl http://localhost:9201 to check if it returns 401"
+      );
+    } else {
+      console.error("❌ ES initIndices failed:", err.message);
+    }
+    // Non-fatal — worker continues without search indexing
   }
 }
+
 
 // ─── Upsert Document ──────────────────────────────────────────────────────────
 
