@@ -499,6 +499,114 @@ Email.addHook("afterUpdate", "esSyncEmailUpdate", (instance) => {
   });
 });
 
+// ── ListUploadRecord hooks (Contacts / Audience) ──────────────────────────────
+ListUploadRecord.addHook("afterCreate", "esSyncContactCreate", (instance) => {
+  publishEsSync("upsert", INDICES.CONTACTS, instance.id, {
+    id:              instance.id,
+    // userId is not on this model — batchId is the tenant key; we index by batchId
+    // and the search controller will scope by batchId or skip userId filter for contacts
+    batchId:         instance.batchId,
+    rawEmail:        instance.rawEmail,
+    normalizedEmail: instance.normalizedEmail,
+    domain:          instance.domain,
+    name:            instance.name,
+    status:          instance.status,
+    company:         instance.metadata?.company || null,
+    phone:           instance.metadata?.phone   || null,
+    title:           instance.metadata?.title   || null,
+    createdAt:       instance.createdAt,
+  });
+});
+
+ListUploadRecord.addHook("afterUpdate", "esSyncContactUpdate", (instance) => {
+  publishEsSync("upsert", INDICES.CONTACTS, instance.id, {
+    id:              instance.id,
+    batchId:         instance.batchId,
+    rawEmail:        instance.rawEmail,
+    normalizedEmail: instance.normalizedEmail,
+    domain:          instance.domain,
+    name:            instance.name,
+    status:          instance.status,
+    company:         instance.metadata?.company || null,
+    phone:           instance.metadata?.phone   || null,
+    title:           instance.metadata?.title   || null,
+    createdAt:       instance.createdAt,
+  });
+});
+
+ListUploadRecord.addHook("afterDestroy", "esSyncContactDelete", (instance) => {
+  publishEsSync("delete", INDICES.CONTACTS, instance.id);
+});
+
+// ── Lead hooks ────────────────────────────────────────────────────────────────
+Lead.addHook("afterCreate", "esSyncLeadCreate", (instance) => {
+  publishEsSync("upsert", INDICES.LEADS, instance.id, {
+    id:             instance.id,
+    userId:         instance.userId,
+    contactId:      instance.contactId,
+    stageId:        instance.stageId,
+    value:          instance.value,
+    // Denormalise contact fields from metadata (populated at lead creation in service layer)
+    email:          instance.metadata?.email   || null,
+    name:           instance.metadata?.name    || null,
+    company:        instance.metadata?.company || null,
+    stageName:      instance.metadata?.stageName || null,
+    lastActivityAt: instance.lastActivityAt,
+    createdAt:      instance.createdAt,
+  });
+});
+
+Lead.addHook("afterUpdate", "esSyncLeadUpdate", (instance) => {
+  publishEsSync("upsert", INDICES.LEADS, instance.id, {
+    id:             instance.id,
+    userId:         instance.userId,
+    contactId:      instance.contactId,
+    stageId:        instance.stageId,
+    value:          instance.value,
+    email:          instance.metadata?.email   || null,
+    name:           instance.metadata?.name    || null,
+    company:        instance.metadata?.company || null,
+    stageName:      instance.metadata?.stageName || null,
+    lastActivityAt: instance.lastActivityAt,
+    createdAt:      instance.createdAt,
+  });
+});
+
+Lead.addHook("afterDestroy", "esSyncLeadDelete", (instance) => {
+  publishEsSync("delete", INDICES.LEADS, instance.id);
+});
+
+// ── Campaign hooks ────────────────────────────────────────────────────────────
+Campaign.addHook("afterCreate", "esSyncCampaignCreate", (instance) => {
+  publishEsSync("upsert", INDICES.CAMPAIGNS, instance.id, {
+    id:        instance.id,
+    userId:    instance.userId,
+    name:      instance.name,
+    subject:   instance.subject,
+    textBody:  instance.textBody,
+    status:    instance.status,
+    createdAt: instance.createdAt,
+    updatedAt: instance.updatedAt,
+  });
+});
+
+Campaign.addHook("afterUpdate", "esSyncCampaignUpdate", (instance) => {
+  publishEsSync("upsert", INDICES.CAMPAIGNS, instance.id, {
+    id:        instance.id,
+    userId:    instance.userId,
+    name:      instance.name,
+    subject:   instance.subject,
+    textBody:  instance.textBody,
+    status:    instance.status,
+    createdAt: instance.createdAt,
+    updatedAt: instance.updatedAt,
+  });
+});
+
+Campaign.addHook("afterDestroy", "esSyncCampaignDelete", (instance) => {
+  publishEsSync("delete", INDICES.CAMPAIGNS, instance.id);
+});
+
 export {
   User,
   GmailSender,
