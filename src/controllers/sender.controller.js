@@ -738,3 +738,36 @@ export const testImapConnection = asyncHandler(async (req, res) => {
     message: "IMAP connection successful",
   });
 });
+// =========================
+// UPDATE WARMUP SETTINGS
+// =========================
+export const updateWarmupSettings = asyncHandler(async (req, res) => {
+  const { senderId } = req.params;
+  const userId = req.user.id;
+  const { enabled, status, dailyLimit, replyRate } = req.body;
+
+  const [gmail, outlook, smtp] = await Promise.all([
+    GmailSender.findOne({ where: { id: senderId, userId } }),
+    OutlookSender.findOne({ where: { id: senderId, userId } }),
+    SmtpSender.findOne({ where: { id: senderId, userId } }),
+  ]);
+
+  const sender = gmail || outlook || smtp;
+  if (!sender) {
+    throw new Error("Sender not found");
+  }
+
+  const updateData = {};
+  if (enabled !== undefined) updateData.warmupEnabled = enabled;
+  if (status !== undefined) updateData.warmupStatus = status;
+  if (dailyLimit !== undefined) updateData.warmupDailyLimit = dailyLimit;
+  if (replyRate !== undefined) updateData.warmupReplyRate = replyRate;
+
+  await sender.update(updateData);
+
+  res.json({
+    success: true,
+    message: "Warmup settings updated successfully",
+    data: sender,
+  });
+});

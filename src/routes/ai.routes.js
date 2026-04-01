@@ -80,9 +80,25 @@ router.get("/generate-sequence-stream", protect, async (req, res) => {
       if (stream.destroy) stream.destroy();
     });
 
-  } catch (error) {
+    } catch (error) {
     console.error("AI Stream Route Error:", error);
-    res.end();
+    // If we haven't written anything to the client yet, send a JSON error
+    if (!res.headersSent) {
+      res.status(500).json({ 
+        success: false, 
+        message: error.code === 'ECONNREFUSED' 
+          ? "Ollama service is not running. Please start Ollama to use AI features." 
+          : "Failed to initialize AI stream" 
+      });
+    } else {
+      // If we already started the stream, send an SSE error event
+      res.write(`event: error\ndata: ${JSON.stringify({ 
+        message: error.code === 'ECONNREFUSED' 
+          ? "Ollama service is not running. Please start Ollama." 
+          : "Stream generation failed" 
+      })}\n\n`);
+      res.end();
+    }
   }
 });
 

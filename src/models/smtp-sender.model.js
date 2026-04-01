@@ -189,6 +189,39 @@ const SmtpSender = sequelize.define(
       type: DataTypes.DATE,
       allowNull: true,
     },
+
+    /* =========================
+       ACTIVE WARMUP SETTINGS
+    ========================= */
+    warmupEnabled: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+    },
+
+    warmupStatus: {
+      type: DataTypes.ENUM("active", "paused", "disabled"),
+      defaultValue: "disabled",
+    },
+
+    warmupDailyLimit: {
+      type: DataTypes.INTEGER,
+      defaultValue: 20,
+    },
+
+    warmupCurrentSent: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+    },
+
+    warmupReplyRate: {
+      type: DataTypes.FLOAT,
+      defaultValue: 0.3, // 30% of warmup emails get a reply
+    },
+
+    warmupDaysActive: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+    },
   },
   {
     tableName: "smtp_senders",

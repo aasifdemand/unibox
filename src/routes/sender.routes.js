@@ -12,6 +12,7 @@ import {
   testImapConnection,
   getSender,
   updateSender,
+  updateWarmupSettings,
   bulkDeleteSenders,
   bulkCreateSenders,
 } from "../controllers/sender.controller.js";
@@ -19,6 +20,7 @@ import GmailSender from "../models/gmail-sender.model.js";
 import OutlookSender from "../models/outlook-sender.model.js";
 import passportGoogle from "../config/passportgoogle-senders.js";
 import passportMicrosoft from "../config/passport-microsoft.config.js";
+import { senderHealthService } from "../services/sender-health.service.js";
 import { queueMailboxSync } from "../queues/mailbox.queue.js";
 
 
@@ -278,7 +280,8 @@ router.get(
         });
       }
 
-      // Trigger initial sync
+      // Trigger health check and initial sync
+      senderHealthService.evaluateSender(sender.id, "gmail").catch(console.error);
       queueMailboxSync(sender.id, "gmail").catch(console.error);
 
       const frontendUrl = process.env.FRONTEND_URL || "http://localhost:8080";
@@ -425,7 +428,8 @@ router.get(
         });
       }
 
-      // Trigger initial sync
+      // Trigger health check and initial sync
+      senderHealthService.evaluateSender(sender.id, "outlook").catch(console.error);
       queueMailboxSync(sender.id, "outlook").catch(console.error);
 
       const frontendUrl = process.env.FRONTEND_URL || "http://localhost:8080";
@@ -495,5 +499,7 @@ router.post("/:senderId/revoke", protect, revokeSenderAccess);
 
 router.post("/test-smtp", protect, testSmtpConnection);
 router.post("/test-imap", protect, testImapConnection);
+
+router.put("/:senderId/warmup", protect, updateWarmupSettings);
 
 export default router;

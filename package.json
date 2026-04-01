@@ -15,6 +15,8 @@
     "blacklist": "node src/workers/blacklist-monitoring.worker.js",
     "mailbox": "node src/workers/mailbox-sync.worker.js",
     "imap-append": "node src/workers/imap-append.worker.js",
+    "warmup": "node src/workers/active-warmup.worker.js",
+    "warmup-monitor": "node src/workers/active-warmup-monitor.worker.js",
     "lint": "eslint . --max-warnings=0",
     "lint:fix": "eslint . --fix"
   },

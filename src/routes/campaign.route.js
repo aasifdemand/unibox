@@ -10,6 +10,8 @@ import {
   updateCampaign,
   deleteCampaign,
   getCampaignReplies,
+  sendTestEmail,
+  sendTestEmailStateless,
 } from "../controllers/campaign.controller.js";
 
 /**
@@ -309,5 +311,7 @@ router.post("/:id/resume", protect, resumeCampaign);
 
 // In your campaign routes
 router.get("/:id/replies", protect, getCampaignReplies);
+router.post("/:id/test-send", protect, sendTestEmail);
+router.post("/test-send-stateless", protect, sendTestEmailStateless);
 
 export default router;

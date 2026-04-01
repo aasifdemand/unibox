@@ -4,7 +4,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || "http://localhost:11434";
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "llama3";
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "phi2";
 
 /**
  * Extract JSON from a string (handles markdown blocks or preamble).
@@ -173,6 +173,10 @@ NO commentary. NO markdown. JUST RAW JSON.`;
 
     return response.data; // This is a readable stream of Ollama response chunks
   } catch (error) {
+    if (error.code === 'ECONNREFUSED') {
+      console.error("Ollama Connection Refused: Ensure Ollama is running on", OLLAMA_BASE_URL);
+      throw new Error("Ollama service is not running. Please start it to use AI features.");
+    }
     console.error("AI Streaming Generation Failed:", error.message);
     throw error;
   }

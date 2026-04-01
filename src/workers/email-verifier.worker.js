@@ -9,17 +9,14 @@ import { getRabbitChannel as getChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
 import { Op } from "sequelize";
 
-import { HttpsProxyAgent } from "https-proxy-agent";
-
-import { getNextProxy } from "../utils/proxy-fetcher.js";
-
 /* =========================
    CONSTANTS
 ========================= */
-const VERIFICATION_TTL_MS = 3 * 24 * 60 * 60 * 1000;
-const POLL_INTERVAL_MS = 15000;
-const MAX_POLL_ATTEMPTS = 60;
-const BATCH_SIZE_LIMIT = 500;
+
+const POLL_INTERVAL_MS = 2000;
+const MAX_POLL_INTERVAL_MS = 10000;
+const MAX_POLL_ATTEMPTS = 50;
+const BATCH_SIZE_LIMIT = 200;
 
 const MAX_EMAIL_RETRIES = 3;
 const RETRY_DELAY_MS = 20_000;
@@ -29,8 +26,7 @@ const RETRY_DELAY_MS = 20_000;
 ========================= */
 const normalizeEmail = (e) => (e || "").trim().toLowerCase();
 
-const isFresh = (date) =>
-  date && Date.now() - new Date(date).getTime() < VERIFICATION_TTL_MS;
+
 
 const canRetryEmail = (meta) => (meta?.retryCount ?? 0) < MAX_EMAIL_RETRIES;
 
@@ -63,7 +59,6 @@ async function submitBatchToEndBounce(emails) {
   console.log(`📤 Submitting ${emails.length} emails to EndBounce`);
 
   try {
-    const proxy = await getNextProxy();
     const config = {
       headers: {
         "x-api-key": process.env.ENDBOUNCE_API_KEY,
@@ -71,31 +66,12 @@ async function submitBatchToEndBounce(emails) {
       },
       timeout: 60000,
     };
-    if (proxy) {
-      config.httpsAgent = new HttpsProxyAgent(proxy);
-      config.proxy = false;
-    }
 
-    let res;
-    try {
-      res = await axios.post(
-        "https://api.endbounce.com/api/integrations/v1/verify",
-        { emails },
-        config
-      );
-    } catch (apiErr) {
-      if (proxy && apiErr.response?.status === 403) {
-        console.warn("⚠️ Proxy blocked EndBounce submission (403). Falling back to direct connection.");
-        const directConfig = { ...config, httpsAgent: null, proxy: false };
-        res = await axios.post(
-          "https://api.endbounce.com/api/integrations/v1/verify",
-          { emails },
-          directConfig
-        );
-      } else {
-        throw apiErr;
-      }
-    }
+    const res = await axios.post(
+      "https://api.endbounce.com/api/integrations/v1/verify",
+      { emails },
+      config
+    );
 
     // Detect mode: 'sync'
     if (res.data.mode === 'sync') {
@@ -133,15 +109,10 @@ async function submitBatchToEndBounce(emails) {
 
 async function getJobStatus(requestId) {
   try {
-    const proxy = await getNextProxy();
     const config = {
       headers: { "x-api-key": process.env.ENDBOUNCE_API_KEY },
       timeout: 30000,
     };
-    if (proxy) {
-      config.httpsAgent = new HttpsProxyAgent(proxy);
-      config.proxy = false;
-    }
 
     const res = await axios.get(
       `https://api.endbounce.com/api/integrations/v1/jobs/${requestId}/status`,
@@ -155,16 +126,11 @@ async function getJobStatus(requestId) {
 }
 
 async function pollBatchResults(requestId) {
-  const proxy = await getNextProxy();
   const config = {
     params: { status: "all" },
     headers: { "x-api-key": process.env.ENDBOUNCE_API_KEY },
     timeout: 30000,
   };
-  if (proxy) {
-    config.httpsAgent = new HttpsProxyAgent(proxy);
-    config.proxy = false;
-  }
 
   const res = await axios.get(
     `https://api.endbounce.com/api/integrations/v1/jobs/${requestId}/results`,
@@ -257,6 +223,8 @@ async function startWorker() {
 
             if (!results) {
               console.log(`⏳ Polling status for job: ${requestId}...`);
+              let currentInterval = POLL_INTERVAL_MS;
+
               for (let poll = 1; poll <= MAX_POLL_ATTEMPTS; poll++) {
                 const status = await getJobStatus(requestId);
 
@@ -272,14 +240,16 @@ async function startWorker() {
                   break;
                 }
 
-                await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+                // Adaptive delay: wait and then increase slightly
+                await new Promise((r) => setTimeout(r, currentInterval));
+                currentInterval = Math.min(currentInterval + 1000, MAX_POLL_INTERVAL_MS);
               }
             }
 
             if (!results) continue;
 
             const stillPending = [];
-            const successUpdates = [];
+
 
             // Group by status for bulk updates
             const updatesByStatus = {};

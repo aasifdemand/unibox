@@ -22,6 +22,7 @@ import Lead from "./lead.model.js";
 import Integration from "./integration.model.js";
 import MailboxFolder from "./mailbox-folder.model.js";
 import MailboxMessage from "./mailbox-message.model.js";
+import WarmupMessage from "./warmup-message.model.js";
 /* =====================================================
    USER OWNERSHIP
 ===================================================== */
@@ -432,4 +433,5 @@ export {
   Integration,
   MailboxFolder,
   MailboxMessage,
+  WarmupMessage,
 };

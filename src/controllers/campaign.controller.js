@@ -21,6 +21,150 @@ import timezone from "dayjs/plugin/timezone.js";
 dayjs.extend(utc);
 dayjs.extend(timezone);
 
+/**
+ * SEND TEST EMAIL
+ */
+export const sendTestEmail = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { testEmail, stepOrder = 0, variables = {} } = req.body;
+
+  if (!testEmail) {
+    throw new AppError("Test email address is required", 400);
+  }
+
+  const campaign = await Campaign.findOne({
+    where: { id, userId: req.user.id },
+    include: [{ 
+      model: CampaignStep, 
+      as: "CampaignSteps",
+      where: { stepOrder },
+      required: false 
+    }]
+  });
+
+  if (!campaign) {
+    throw new AppError("Campaign not found", 404);
+  }
+
+  const step = (campaign.CampaignSteps && campaign.CampaignSteps[0]) || {
+    subject: campaign.subject,
+    htmlBody: campaign.htmlBody
+  };
+
+  // 1. Simple Variable Interpolation for Test
+  let finalSubject = step.subject;
+  let finalBody = step.htmlBody;
+
+  const sampleVars = {
+    first_name: "TestUser",
+    company: "TestCompany",
+    sender_name: req.user.name || "Sender",
+    ...variables
+  };
+
+  Object.entries(sampleVars).forEach(([key, val]) => {
+    const regex = new RegExp(`{{${key}}}`, 'g');
+    finalSubject = finalSubject.replace(regex, val);
+    finalBody = finalBody.replace(regex, val);
+  });
+
+  // 2. Create a temporary Email record for tracking (optional, but good for logs)
+  const email = await Email.create({
+    userId: req.user.id,
+    campaignId: campaign.id,
+    senderId: campaign.senderId,
+    senderType: campaign.senderType,
+    recipientEmail: testEmail,
+    subject: `[TEST] ${finalSubject}`,
+    htmlBody: finalBody,
+    status: "pending",
+    metadata: { isTest: true }
+  });
+
+  // 3. Queue for Routing (MTA Detection, Proxy Selection, etc.)
+  const { getRabbitChannel: getChannel } = await import("../queues/rabbit.js");
+  const { QUEUES } = await import("../queues/queues.js");
+  const channel = await getChannel();
+  
+  channel.sendToQueue(QUEUES.EMAIL_ROUTE, Buffer.from(JSON.stringify({
+    emailId: email.id
+  })), { persistent: true });
+
+  res.json({
+    success: true,
+    message: `Test email sent to ${testEmail}`,
+    emailId: email.id
+  });
+});
+
+/**
+ * SEND TEST EMAIL (STATELESS)
+ * Used during campaign creation before the campaign is saved.
+ */
+export const sendTestEmailStateless = asyncHandler(async (req, res) => {
+  const { testEmail, subject, htmlBody, senderId, senderType, variables = {} } = req.body;
+
+  if (!testEmail || !subject || !htmlBody || !senderId || !senderType) {
+    throw new AppError("Missing required fields for test send", 400);
+  }
+
+  // 1. Verify sender belongs to user
+  let sender;
+  if (senderType === "gmail") {
+    sender = await GmailSender.findOne({ where: { id: senderId, userId: req.user.id } });
+  } else if (senderType === "outlook") {
+    sender = await OutlookSender.findOne({ where: { id: senderId, userId: req.user.id } });
+  } else if (senderType === "smtp") {
+    sender = await SmtpSender.findOne({ where: { id: senderId, userId: req.user.id } });
+  }
+
+  if (!sender) {
+    throw new AppError("Sender not found or unauthorized", 404);
+  }
+
+  // 2. Simple Variable Interpolation
+  let finalSubject = subject;
+  let finalBody = htmlBody;
+
+  const sampleVars = {
+    first_name: "TestUser",
+    company: "TestCompany",
+    sender_name: req.user.name || "Sender",
+    ...variables
+  };
+
+  Object.entries(sampleVars).forEach(([key, val]) => {
+    const regex = new RegExp(`{{${key}}}`, 'g');
+    finalSubject = finalSubject.replace(regex, val);
+    finalBody = finalBody.replace(regex, val);
+  });
+
+  // 3. Create a temporary Email record
+  const email = await Email.create({
+    userId: req.user.id,
+    senderId: senderId,
+    senderType: senderType,
+    recipientEmail: testEmail,
+    subject: `[TEST] ${finalSubject}`,
+    htmlBody: finalBody,
+    status: "pending",
+    metadata: { isTest: true }
+  });
+
+  // 4. Queue for Routing (MTA Detection, Proxy Selection, etc.)
+  const { getRabbitChannel: getChannel } = await import("../queues/rabbit.js");
+  const { QUEUES } = await import("../queues/queues.js");
+  const channel = await getChannel();
+  
+  channel.sendToQueue(QUEUES.EMAIL_ROUTE, Buffer.from(JSON.stringify({
+    emailId: email.id
+  })), { persistent: true });
+
+  res.json({
+    success: true,
+    message: `Test email sent to ${testEmail}`
+  });
+});
 
 export const getCampaigns = asyncHandler(async (req, res) => {
   const campaigns = await Campaign.findAll({

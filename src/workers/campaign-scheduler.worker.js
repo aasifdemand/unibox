@@ -58,7 +58,16 @@ const limit = pLimit(20); // Process 20 campaigns in parallel
       const startTime = campaign.startTime || "09:00";
       const endTime = campaign.endTime || "18:00";
 
-      if (!allowedDays.includes(dayName) || currentTime < startTime || currentTime > endTime) {
+      let isInsideWindow = false;
+      if (startTime <= endTime) {
+        // Standard window (e.g., 09:00 to 18:00)
+        isInsideWindow = currentTime >= startTime && currentTime <= endTime;
+      } else {
+        // Cross-midnight window (e.g., 22:00 to 04:00)
+        isInsideWindow = currentTime >= startTime || currentTime <= endTime;
+      }
+
+      if (!allowedDays.includes(dayName) || !isInsideWindow) {
         return; // Outside window
       }
 

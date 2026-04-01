@@ -16,6 +16,7 @@ import {
 import { DeliveryGuard } from "../utils/delivery-guard.js";
 import SenderHealth from "../models/sender-health.model.js";
 import { MailboxFolder, MailboxMessage } from "../models/index.js";
+import { senderHealthService } from "../services/sender-health.service.js";
 import { queueMailboxSync } from "../queues/mailbox.queue.js";
 
 const MAILBOX_CACHE_TTL = 1800; // 30 minutes
@@ -422,6 +423,11 @@ export const getMailboxes = asyncHandler(async (req, res) => {
   const allMailboxes = await Promise.all([
     ...gmailSenders.map(async (s) => {
       const health = await DeliveryGuard.canSendToday(s);
+      // If health record is missing, trigger an evaluation in the background
+      if (!s.SenderHealth) {
+        senderHealthService.evaluateSender(s.id, "gmail").catch(() => {});
+      }
+
       return {
         id: s.id,
         type: "gmail",
@@ -433,18 +439,26 @@ export const getMailboxes = asyncHandler(async (req, res) => {
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
         lastSyncAt: s.lastInboxSyncAt || s.lastUsedAt,
-        stats: { 
+        stats: {
           dailySent: health.currentCount,
           dailyLimit: health.limit,
           remaining: health.remaining,
           warmupScore: Math.round((health.limit / DeliveryGuard.LIMITS.GMAIL.max) * 100),
-          reputationScore: s.SenderHealth?.reputationScore || 0,
-          healthStatus: s.SenderHealth?.healthStatus || "unknown"
+          reputationScore: s.SenderHealth ? s.SenderHealth.reputationScore : 100,
+          healthStatus: s.SenderHealth ? s.SenderHealth.healthStatus : "healthy",
+          warmupEnabled: s.warmupEnabled,
+          warmupStatus: s.warmupStatus,
         },
       };
     }),
     ...outlookSenders.map(async (s) => {
       const health = await DeliveryGuard.canSendToday(s);
+
+      // If health record is missing, trigger an evaluation in the background
+      if (!s.SenderHealth) {
+        senderHealthService.evaluateSender(s.id, "outlook").catch(() => {});
+      }
+
       return {
         id: s.id,
         type: "outlook",
@@ -456,18 +470,26 @@ export const getMailboxes = asyncHandler(async (req, res) => {
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
         lastSyncAt: s.lastInboxSyncAt || s.lastUsedAt,
-        stats: { 
+        stats: {
           dailySent: health.currentCount,
           dailyLimit: health.limit,
           remaining: health.remaining,
           warmupScore: Math.round((health.limit / DeliveryGuard.LIMITS.OUTLOOK.max) * 100),
-          reputationScore: s.SenderHealth?.reputationScore || 0,
-          healthStatus: s.SenderHealth?.healthStatus || "unknown"
+          reputationScore: s.SenderHealth ? s.SenderHealth.reputationScore : 100,
+          healthStatus: s.SenderHealth ? s.SenderHealth.healthStatus : "healthy",
+          warmupEnabled: s.warmupEnabled,
+          warmupStatus: s.warmupStatus,
         },
       };
     }),
     ...smtpSenders.map(async (s) => {
       const health = await DeliveryGuard.canSendToday(s);
+
+      // If health record is missing, trigger an evaluation in the background
+      if (!s.SenderHealth) {
+        senderHealthService.evaluateSender(s.id, "smtp").catch(() => {});
+      }
+
       return {
         id: s.id,
         type: "smtp",
@@ -479,13 +501,15 @@ export const getMailboxes = asyncHandler(async (req, res) => {
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
         lastSyncAt: s.lastInboxSyncAt || s.lastUsedAt,
-        stats: { 
+        stats: {
           dailySent: health.currentCount,
           dailyLimit: health.limit,
           remaining: health.remaining,
           warmupScore: Math.round((health.limit / DeliveryGuard.LIMITS.SMTP.max) * 100),
-          reputationScore: s.SenderHealth?.reputationScore || 0,
-          healthStatus: s.SenderHealth?.healthStatus || "unknown"
+          reputationScore: s.SenderHealth ? s.SenderHealth.reputationScore : 100,
+          healthStatus: s.SenderHealth ? s.SenderHealth.healthStatus : "healthy",
+          warmupEnabled: s.warmupEnabled,
+          warmupStatus: s.warmupStatus,
         },
       };
     }),
@@ -743,6 +767,7 @@ export const getGmailLabels = asyncHandler(async (req, res) => {
           sentCount: sentCount,
         };
       } catch (error) {
+
         return {
           id: label.id,
           name: label.name,
