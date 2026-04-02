@@ -2,6 +2,7 @@ import "../models/index.js";
 import { initGlobalErrorHandlers } from "../utils/error-handler.js";
 import { getRabbitChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
+import { queueMailboxSync } from "../queues/mailbox.queue.js";
 import MailboxSyncService from "../services/mailbox-sync.service.js";
 import { GmailSender, OutlookSender, SmtpSender } from "../models/index.js";
 
@@ -56,10 +57,8 @@ async function scheduleGlobalSyncs() {
   ];
 
   for (const m of all) {
-    // We could queue directly here, but using the service for now is fine
-    // queueMailboxSync(m.id, m.type);
-    log("DEBUG", "Queueing sync for mailbox", { id: m.id, type: m.type });
-    // (Self-invocation for now, ideally this would be triggered from outside)
+    queueMailboxSync(m.id, m.type);
+    log("DEBUG", "Queued sync for mailbox", { id: m.id, type: m.type });
   }
 }
 

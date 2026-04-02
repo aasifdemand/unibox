@@ -222,32 +222,35 @@ class MailboxSyncService {
     const token = await getValidMicrosoftToken(sender);
     if (!token) return;
 
-    const response = await axios.get(
-      `https://graph.microsoft.com/v1.0/me/mailFolders/${folder.providerFolderId}/messages`,
-      {
-        headers: { Authorization: `Bearer ${token}` },
-        params: {
-          $top: 50,
-          $select: "id,subject,from,toRecipients,receivedDateTime,isRead,bodyPreview,conversationId",
-        }
-      }
-    );
+    let nextLink = `https://graph.microsoft.com/v1.0/me/mailFolders/${folder.providerFolderId}/messages?$top=50&$select=id,subject,from,toRecipients,receivedDateTime,isRead,bodyPreview,conversationId`;
+    let processedCount = 0;
+    const MAX_SYNC = 500; // Limit per sync pass
 
-    const messages = response.data.value || [];
-    for (const msg of messages) {
-      await MailboxMessage.upsert({
-        senderId: sender.id,
-        senderType: 'outlook',
-        folderId: folder.id,
-        providerMessageId: msg.id,
-        providerThreadId: msg.conversationId,
-        subject: msg.subject || "",
-        from: msg.from?.emailAddress?.address || "",
-        to: msg.toRecipients?.map(r => r.emailAddress?.address).join(", ") || "",
-        date: new Date(msg.receivedDateTime),
-        snippet: msg.bodyPreview || "",
-        isRead: msg.isRead,
+    while (nextLink && processedCount < MAX_SYNC) {
+      const response = await axios.get(nextLink, {
+        headers: { Authorization: `Bearer ${token}` }
       });
+
+      const messages = response.data.value || [];
+      for (const msg of messages) {
+        await MailboxMessage.upsert({
+          senderId: sender.id,
+          senderType: 'outlook',
+          folderId: folder.id,
+          providerMessageId: msg.id,
+          providerThreadId: msg.conversationId,
+          subject: msg.subject || "",
+          from: msg.from?.emailAddress?.address || "",
+          to: msg.toRecipients?.map(r => r.emailAddress?.address).join(", ") || "",
+          date: new Date(msg.receivedDateTime),
+          snippet: msg.bodyPreview || "",
+          isRead: msg.isRead,
+        });
+        processedCount++;
+      }
+
+      // Record next link if it exists
+      nextLink = response.data['@odata.nextLink'];
     }
 
     // Update folder sync timestamp

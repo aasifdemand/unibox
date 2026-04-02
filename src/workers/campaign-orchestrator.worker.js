@@ -8,7 +8,7 @@ import CampaignStep from "../models/campaign-step.model.js";
 import CampaignSend from "../models/campaign-send.model.js";
 import Email from "../models/email.model.js";
 import GlobalEmailRegistry from "../models/global-email-registry.model.js";
-import { getSenderWithType, sequelize } from "../models/index.js";
+import { getSenderWithType } from "../models/index.js";
 
 import { getRabbitChannel as getChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
@@ -18,22 +18,23 @@ import { tryCompleteCampaign } from "../utils/campaign-completion.checker.js";
 import crypto from "crypto";
 
 import { DateTime } from "luxon";
+import sequelize from "../config/db.js";
 
 function nextSendableTime(campaign) {
-  const tz        = campaign.timezone  || "UTC";
-  const days      = campaign.sendingDays || ["monday","tuesday","wednesday","thursday","friday"];
-  const startTime = campaign.startTime  || "09:00";
-  const endTime   = campaign.endTime    || "18:00";
+  const tz = campaign.timezone || "UTC";
+  const days = campaign.sendingDays || ["monday", "tuesday", "wednesday", "thursday", "friday"];
+  const startTime = campaign.startTime || "09:00";
+  const endTime = campaign.endTime || "18:00";
 
   const [startH, startM] = startTime.split(":").map(Number);
-  const [endH,   endM  ] = endTime.split(":").map(Number);
+  const [endH, endM] = endTime.split(":").map(Number);
 
   let cursor = DateTime.now().setZone(tz);
   for (let i = 0; i < 14 * 24 * 60; i += 1) {
-    const dayName    = cursor.toFormat("EEEE").toLowerCase();
+    const dayName = cursor.toFormat("EEEE").toLowerCase();
     const curMinutes = cursor.hour * 60 + cursor.minute;
-    const startMins  = startH * 60 + startM;
-    const endMins    = endH   * 60 + endM;
+    const startMins = startH * 60 + startM;
+    const endMins = endH * 60 + endM;
     if (days.includes(dayName) && curMinutes >= startMins && curMinutes < endMins) return null;
     cursor = cursor.plus({ minutes: 1 });
   }
@@ -69,18 +70,18 @@ async function startWorker() {
         try {
           const step = Number.isInteger(recipient.currentStep) ? recipient.currentStep : 0;
           if (step === 0) {
-             await CampaignStep.upsert({
-                campaignId: campaign.id,
-                stepOrder: 0,
-                subject: campaign.subject || "No Subject",
-                htmlBody: campaign.htmlBody || "<p></p>",
-                textBody: campaign.textBody || "",
-                delayMinutes: 0,
-                condition: "always",
-              }, { transaction: t });
+            await CampaignStep.upsert({
+              campaignId: campaign.id,
+              stepOrder: 0,
+              subject: campaign.subject || "No Subject",
+              htmlBody: campaign.htmlBody || "<p></p>",
+              textBody: campaign.textBody || "",
+              delayMinutes: 0,
+              condition: "always",
+            }, { transaction: t });
           }
 
-          const stepConfig = await CampaignStep.findOne({ 
+          const stepConfig = await CampaignStep.findOne({
             where: { campaignId, stepOrder: step },
             transaction: t
           });
@@ -92,7 +93,7 @@ async function startWorker() {
             return channel.ack(msg);
           }
 
-          const globalRegistry = await GlobalEmailRegistry.findOne({ 
+          const globalRegistry = await GlobalEmailRegistry.findOne({
             where: { normalizedEmail: recipient.email.toLowerCase() },
             transaction: t
           });
