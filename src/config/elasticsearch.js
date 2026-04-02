@@ -15,9 +15,15 @@ export function getElasticsearchClient() {
     return null;
   }
 
-  // Basic Auth
+  // Basic Auth - Brute Force Header Injection for Docker
   const username = process.env.ELASTICSEARCH_USERNAME || "elastic";
-  const password = process.env.ELASTICSEARCH_PASSWORD;
+  let rawPassword = process.env.ELASTICSEARCH_PASSWORD || "";
+  let password = rawPassword;
+  try {
+    if (rawPassword.includes("%")) password = decodeURIComponent(rawPassword);
+  } catch (err) { /* ignore */ }
+
+  const authBuffer = Buffer.from(`${username}:${password}`).toString("base64");
 
   const options = {
     node: url,
@@ -27,24 +33,18 @@ export function getElasticsearchClient() {
     sniffOnConnectionFault: false,
     agent: false,
     ssl: { rejectUnauthorized: false },
-    // 🛡️ DEFINITIVE COMPATIBILITY HEADERS
     headers: {
+      "Authorization": `Basic ${authBuffer}`,
       "x-elastic-product-origin": "elasticsearch",
       "Accept": "application/vnd.elasticsearch+json; compatible-with=7",
       "Content-Type": "application/json",
     },
-    // Bypass internal product checks for official client v7.14+
     enableMetaHeader: false,
   };
 
-  if (username && password) {
-    options.auth = { username, password };
-    // Brute-force auth header failsafe
-    const authBuffer = Buffer.from(`${username}:${password}`).toString("base64");
-    options.headers["Authorization"] = `Basic ${authBuffer}`;
-
-    const maskedPass = (password || "").substring(0, 2) + "***";
-    console.log(`🔑 ES Auth detected: user=${username}, pass=${maskedPass}`);
+  if (password) {
+    const maskedPass = password.substring(0, 2) + "***";
+    console.log(`📡 ES Docker Auth: user=${username}, pass=${maskedPass}, target=${url}`);
   }
 
   client = new Client(options);
