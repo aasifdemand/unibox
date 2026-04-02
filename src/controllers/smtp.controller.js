@@ -777,7 +777,10 @@ export const syncSmtpMailbox = asyncHandler(async (req, res) => {
     await queueMailboxSync(mailboxId, "smtp");
 
     // 3. Update last sync timestamp
-    const updateData = { lastInboxSyncAt: new Date() };
+    const updateData = {
+      lastInboxSyncAt: new Date(),
+      lastUsedAt: new Date(), // Update activity timestamp too
+    };
     if (folder.toUpperCase() === "SENT") updateData.lastSentSyncAt = new Date();
     if (folder.toUpperCase() === "DRAFTS")
       updateData.lastDraftsSyncAt = new Date();

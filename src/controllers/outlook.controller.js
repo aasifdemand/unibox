@@ -871,7 +871,10 @@ export const syncOutlookMailbox = asyncHandler(async (req, res) => {
     ]);
 
     // 4. Update last sync timestamp
-    const updateData = { lastInboxSyncAt: new Date() };
+    const updateData = {
+      lastInboxSyncAt: new Date(),
+      lastUsedAt: new Date(), // Update activity timestamp too
+    };
     if (folderId === "sentitems" || folderId === "sent")
       updateData.lastSentSyncAt = new Date();
     if (folderId === "drafts") updateData.lastDraftsSyncAt = new Date();

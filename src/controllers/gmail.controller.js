@@ -1042,7 +1042,10 @@ export const syncGmailMailbox = asyncHandler(async (req, res) => {
     await queueMailboxSync(mailboxId, "gmail");
 
     // 3. Update last sync timestamp for the specific folder
-    const updateData = { lastInboxSyncAt: new Date() };
+    const updateData = {
+      lastInboxSyncAt: new Date(),
+      lastUsedAt: new Date(), // Update activity timestamp too
+    };
     if (folderId === "SENT") updateData.lastSentSyncAt = new Date();
     if (folderId === "DRAFT") updateData.lastDraftsSyncAt = new Date();
 
