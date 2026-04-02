@@ -33,7 +33,7 @@ class SenderHealthService {
     // Only perform heavy DNS/IP checks for SMTP/Custom domains
     // Gmail and Outlook consumer accounts are managed by providers and always valid
     const isPublicProvider = ["gmail.com", "outlook.com", "hotmail.com"].includes(domain.toLowerCase());
-    
+
     if (type === "smtp" && !isPublicProvider) {
       spf = await this.checkSPF(domain);
 
@@ -68,7 +68,10 @@ class SenderHealthService {
               sendingIp = aRecords[0];
             }
           }
-        } catch (e) { }
+        } catch (e) {
+          console.log(e);
+
+        }
       }
 
       if (sendingIp) {
@@ -230,29 +233,66 @@ class SenderHealthService {
       where: { senderId, sentAt: { [Op.gte]: last7Days } },
     });
 
-    const bounces = await BounceEvent.count({
-      include: [
-        {
-          model: Email,
-          as: "email",
-          where: { senderId },
-          required: true,
-        },
-      ],
-      where: { createdAt: { [Op.gte]: last7Days } },
-    });
+    const [bounces, complaints] = await Promise.all([
+      BounceEvent.count({
+        include: [{ model: Email, as: "email", where: { senderId }, required: true }],
+        where: { createdAt: { [Op.gte]: last7Days }, bounceType: { [Op.in]: ["hard", "soft"] } },
+      }),
+      BounceEvent.count({
+        include: [{ model: Email, as: "email", where: { senderId }, required: true }],
+        where: { createdAt: { [Op.gte]: last7Days }, bounceType: "complaint" },
+      }),
+    ]);
 
     const bounceRate = totalSent ? (bounces / totalSent) * 100 : 0;
+    const complaintRate = totalSent ? (complaints / totalSent) * 100 : 0;
 
     return {
       bounceRate,
-      complaintRate: 0, // Expand later
+      complaintRate,
     };
   }
 
   /* =========================
      REPUTATION SCORE
   ========================= */
+
+  /**
+   * GLOBAL BOUNCE GUARD
+   * Calculates the bounce rate for a sender across ALL activity in the last 60 minutes.
+   * If > 10% (and min 10 emails sent), marks sender as "critically unhealthy" to 
+   * prevent further damage to account reputation.
+   */
+  async checkGlobalBounceLimit(senderId) {
+    const ONE_HOUR_AGO = new Date(Date.now() - 3600 * 1000);
+
+    const [totalSent, hardBounces] = await Promise.all([
+      Email.count({
+        where: { senderId, sentAt: { [Op.gte]: ONE_HOUR_AGO } },
+      }),
+      BounceEvent.count({
+        include: [{ model: Email, as: "email", where: { senderId }, required: true }],
+        where: { createdAt: { [Op.gte]: ONE_HOUR_AGO }, bounceType: "hard" },
+      }),
+    ]);
+
+    if (totalSent >= 10) {
+      const hourlyBounceRate = (hardBounces / totalSent) * 100;
+      if (hourlyBounceRate >= 10) {
+        console.warn(`🚨 SENDER ${senderId} CRITICAL BOUNCE RATE: ${hourlyBounceRate.toFixed(2)}% (Hourly window)`);
+        
+        await SenderHealth.upsert({
+          senderId,
+          blacklisted: true,
+          reputationScore: 0,
+          lastCheckedAt: new Date(),
+        });
+        
+        return true; // Triggered guard
+      }
+    }
+    return false;
+  }
 
   calculateReputationScore({ spf, dkim, dmarc, ptr, blacklist, behavior }) {
     let score = 0;

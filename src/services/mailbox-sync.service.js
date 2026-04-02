@@ -139,36 +139,34 @@ class MailboxSyncService {
 
     const messages = response.data.messages || [];
     for (const msg of messages) {
-      // Check if already exists to skip full fetch
-      const exists = await MailboxMessage.findOne({
-        where: { senderId: sender.id, providerMessageId: msg.id }
-      });
-      if (exists) continue;
+      try {
+        // Fetch metadata
+        const full = await gmail.users.messages.get({
+          userId: "me",
+          id: msg.id,
+          format: "metadata",
+          metadataHeaders: ["From", "To", "Subject", "Date"],
+        });
 
-      // Fetch metadata
-      const full = await gmail.users.messages.get({
-        userId: "me",
-        id: msg.id,
-        format: "metadata",
-        metadataHeaders: ["From", "To", "Subject", "Date"],
-      });
+        const headers = {};
+        (full.data.payload?.headers || []).forEach(h => { headers[h.name] = h.value; });
 
-      const headers = {};
-      (full.data.payload?.headers || []).forEach(h => { headers[h.name] = h.value; });
-
-      await MailboxMessage.create({
-        senderId: sender.id,
-        senderType: 'gmail',
-        folderId: folder.id,
-        providerMessageId: msg.id,
-        providerThreadId: full.data.threadId,
-        subject: headers["Subject"] || "",
-        from: headers["From"] || "",
-        to: headers["To"] || "",
-        date: new Date(headers["Date"] || Date.now()),
-        snippet: full.data.snippet || "",
-        isRead: !full.data.labelIds?.includes("UNREAD"),
-      });
+        await MailboxMessage.upsert({
+          senderId: sender.id,
+          senderType: 'gmail',
+          folderId: folder.id,
+          providerMessageId: msg.id,
+          providerThreadId: full.data.threadId,
+          subject: headers["Subject"] || "",
+          from: headers["From"] || "",
+          to: headers["To"] || "",
+          date: new Date(headers["Date"] || Date.now()),
+          snippet: full.data.snippet || "",
+          isRead: !full.data.labelIds?.includes("UNREAD"),
+        });
+      } catch (err) {
+        console.error(`[MailboxSync] Error syncing Gmail message ${msg.id}:`, err.message);
+      }
     }
   }
 
@@ -320,7 +318,7 @@ class MailboxSyncService {
                   senderId: sender.id,
                   senderType: 'smtp',
                   folderId: folder.id,
-                  providerMessageId: `imap-${sender.id}-${seqno}`,
+                  providerMessageId: `imap-${sender.id}-${attributes?.uid || seqno}`,
                   subject: parsed.subject || "",
                   from: parsed.from?.text || "",
                   to: parsed.to?.text || "",

@@ -162,6 +162,10 @@ export const getGmailMessages = asyncHandler(async (req, res) => {
   });
   if (!sender) throw new AppError("Gmail mailbox not found", 404);
 
+  let max = parseInt(maxResults);
+  if (isNaN(max) || max < 1) max = 10;
+  if (max > 50) max = 50;
+
   // 1. Try to fetch from local database first
   const localFolder = await MailboxFolder.findOne({
     where: { senderId: mailboxId, name: labelIds[0] || 'INBOX' }
@@ -201,10 +205,6 @@ export const getGmailMessages = asyncHandler(async (req, res) => {
 
   // 3. Fallback to direct fetch for first load
   const gmail = await getGmailClient(sender);
-
-  let max = parseInt(maxResults);
-  if (isNaN(max) || max < 1) max = 10;
-  if (max > 50) max = 50;
 
   const response = await gmail.users.messages.list({
     userId: "me",
@@ -425,7 +425,7 @@ export const getMailboxes = asyncHandler(async (req, res) => {
       const health = await DeliveryGuard.canSendToday(s);
       // If health record is missing, trigger an evaluation in the background
       if (!s.SenderHealth) {
-        senderHealthService.evaluateSender(s.id, "gmail").catch(() => {});
+        senderHealthService.evaluateSender(s.id, "gmail").catch(() => { });
       }
 
       return {
@@ -456,7 +456,7 @@ export const getMailboxes = asyncHandler(async (req, res) => {
 
       // If health record is missing, trigger an evaluation in the background
       if (!s.SenderHealth) {
-        senderHealthService.evaluateSender(s.id, "outlook").catch(() => {});
+        senderHealthService.evaluateSender(s.id, "outlook").catch(() => { });
       }
 
       return {
@@ -487,7 +487,7 @@ export const getMailboxes = asyncHandler(async (req, res) => {
 
       // If health record is missing, trigger an evaluation in the background
       if (!s.SenderHealth) {
-        senderHealthService.evaluateSender(s.id, "smtp").catch(() => {});
+        senderHealthService.evaluateSender(s.id, "smtp").catch(() => { });
       }
 
       return {
@@ -578,6 +578,10 @@ export const getOutlookMessages = asyncHandler(async (req, res) => {
   });
   if (!sender) throw new AppError("Outlook mailbox not found", 404);
 
+  let pageSize = parseInt(top);
+  if (isNaN(pageSize) || pageSize < 1) pageSize = 10;
+  if (pageSize > 1000) pageSize = 1000;
+
   // 1. Try to fetch from local database first
   const localFolder = await MailboxFolder.findOne({
     where: { senderId: mailboxId, [Op.or]: [{ providerFolderId: folderId }, { folderType: folderId }] }
@@ -616,10 +620,6 @@ export const getOutlookMessages = asyncHandler(async (req, res) => {
 
   // 3. Fallback to direct fetch
   const token = await getOutlookToken(sender);
-
-  let pageSize = parseInt(top);
-  if (isNaN(pageSize) || pageSize < 1) pageSize = 10;
-  if (pageSize > 1000) pageSize = 1000;
 
   let endpoint;
   if (folderId === "inbox") {
@@ -767,6 +767,7 @@ export const getGmailLabels = asyncHandler(async (req, res) => {
           sentCount: sentCount,
         };
       } catch (error) {
+        console.log(error);
 
         return {
           id: label.id,

@@ -1,6 +1,6 @@
 import Email from "../models/email.model.js";
 import { Op } from "sequelize";
-import dayjs from "dayjs";
+import { DateTime } from "luxon";
 
 /**
  * DeliveryGuard helps manage sender health by enforcing:
@@ -24,8 +24,8 @@ export class DeliveryGuard {
     const config = this.LIMITS[providerKey] || this.LIMITS.SMTP;
 
     // Calculate account age in days
-    const createdDate = dayjs(sender.createdAt);
-    const ageInDays = dayjs().diff(createdDate, "day");
+    const createdDate = DateTime.fromJSDate(sender.createdAt);
+    const ageInDays = Math.floor(DateTime.now().diff(createdDate, "days").days);
 
     // Volume = Initial + (Age * Increment)
     const calculatedLimit = config.initial + ageInDays * config.dailyIncrement;
@@ -40,12 +40,14 @@ export class DeliveryGuard {
   static async canSendToday(sender) {
     const allowedLimit = await this.getAllowedVolume(sender);
 
-    // Count emails sent by this sender in the last 24 hours (UTC)
+    // Count emails sent by this sender today (UTC)
+    const startOfToday = DateTime.now().toUTC().startOf("day").toJSDate();
+
     const sentTodayCount = await Email.count({
       where: {
         senderId: sender.id,
         createdAt: {
-          [Op.gte]: dayjs.utc().startOf("day").toDate(),
+          [Op.gte]: startOfToday,
         },
         status: ["sent", "delivered", "pending", "queued"], // Include pending to avoid bursts
       },

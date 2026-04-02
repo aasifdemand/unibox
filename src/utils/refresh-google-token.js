@@ -22,9 +22,9 @@ export const refreshGoogleToken = async (sender) => {
     await sender.update({
       accessToken: credentials.access_token,
       refreshToken: credentials.refresh_token || sender.refreshToken,
-      expiresAt: new Date(
-        Date.now() + (credentials.expiry_date || 3600 * 1000),
-      ),
+      expiresAt: credentials.expiry_date
+        ? new Date(credentials.expiry_date)
+        : new Date(Date.now() + 3600 * 1000),
       lastUsedAt: new Date(),
     });
 

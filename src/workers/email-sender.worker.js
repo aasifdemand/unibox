@@ -23,14 +23,16 @@ import SenderHealth from "../models/sender-health.model.js";
 import { smtpWarmupService } from "../services/smtp-warmup.service.js";
 import { syncLead } from "../services/crm-sync.service.js";
 import { syncLeadToAllCRMs } from "../services/crm-sync.provider.js";
+import { senderHealthService } from "../services/sender-health.service.js";
 import { getRabbitChannel as getChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
 import { refreshGoogleToken } from "../utils/refresh-google-token.js";
 import { getValidMicrosoftToken } from "../utils/get-valid-microsoft-token.js";
 
-import { HttpsProxyAgent } from "https-proxy-agent";
+import { SocksProxyAgent } from "socks-proxy-agent";
+import socks from "socks";
 
-import { getNextProxy } from "../utils/proxy-fetcher.js";
+import { getProxyForEmail, deleteProxySticky } from "../utils/proxy-resolver.js";
 
 const redis = new Redis(process.env.REDIS_URL);
 
@@ -51,12 +53,17 @@ const DKIM_SELECTORS_TO_PROBE = [
   "selector1",
   "selector2",
 ];
-const _dnsCache = new Map(); // domain → { spf, dkim, dmarc, ts }
-const DNS_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
 
 async function checkSenderDns(domain) {
-  const cached = _dnsCache.get(domain);
-  if (cached && Date.now() - cached.ts < DNS_CACHE_TTL_MS) return cached;
+  const cacheKey = `dns:check:${domain}`;
+
+  try {
+    const cached = await redis.get(cacheKey);
+    if (cached) return JSON.parse(cached);
+  } catch (err) {
+    console.error("DNS Cache Redis Error:", err.message);
+  }
 
   const result = { spf: false, dkim: false, dkimSelector: null, dmarc: false };
 
@@ -97,7 +104,13 @@ async function checkSenderDns(domain) {
   }
 
   result.ts = Date.now();
-  _dnsCache.set(domain, result);
+
+  try {
+    await redis.set(cacheKey, JSON.stringify(result), "EX", 86400); // 24h
+  } catch (err) {
+    console.error("DNS Cache Store Error:", err.message);
+  }
+
   return result;
 }
 
@@ -134,6 +147,10 @@ function getOrCreateTransporter(sender, proxy = null) {
   }
 
   const transporter = nodemailer.createTransport(transportConfig);
+
+  if (proxy && (proxy.startsWith("socks4") || proxy.startsWith("socks5"))) {
+    transporter.set("proxy_socks_module", socks);
+  }
 
   transporterCache.set(cacheKey, {
     transporter,
@@ -206,6 +223,7 @@ async function startWorker() {
       if (!msg) return;
 
       let emailRecord;
+      let sender;
 
       try {
         const {
@@ -214,8 +232,9 @@ async function startWorker() {
           policy = {},
         } = JSON.parse(msg.content.toString());
 
-        const proxy = await getNextProxy();
-        if (proxy) log("DEBUG", "🌐 Using proxy for this send", { proxy });
+        // Resolve proxy server-side only
+        const proxy = await getProxyForEmail(sender?.email);
+        if (proxy) log("DEBUG", "🌐 Using SOCKS5 proxy for this send", { emailId });
 
         emailRecord = await Email.findByPk(emailId);
 
@@ -232,8 +251,6 @@ async function startWorker() {
         /* =========================
            LOAD SENDER
         ========================= */
-
-        let sender;
 
         if (senderType === "smtp")
           sender = await SmtpSender.findByPk(emailRecord.senderId);
@@ -295,7 +312,7 @@ async function startWorker() {
         let providerConversationId = null;
 
         if (senderType === "smtp") {
-          const transporter = getOrCreateTransporter(sender, null);
+          const transporter = getOrCreateTransporter(sender, proxy);
 
           // 🔍 DNS pre-send check — warn if SPF/DKIM/DMARC are missing
           checkSenderDns(domain)
@@ -352,11 +369,11 @@ async function startWorker() {
             try {
               const composer = new MailComposer(mailOptions);
               const messageBuffer = await composer.compile().build();
-              
+
               channel.sendToQueue(
                 QUEUES.EMAIL_APPEND_SENT,
-                Buffer.from(JSON.stringify({ 
-                  senderId: sender.id, 
+                Buffer.from(JSON.stringify({
+                  senderId: sender.id,
                   messageBuffer: messageBuffer.toString("base64"),
                   senderType: "smtp"
                 })),
@@ -419,7 +436,7 @@ async function startWorker() {
           };
 
           if (proxy) {
-            axiosConfig.httpsAgent = new HttpsProxyAgent(proxy);
+            axiosConfig.httpsAgent = new SocksProxyAgent(proxy);
             axiosConfig.proxy = false;
           }
 
@@ -471,7 +488,7 @@ async function startWorker() {
 
           const axiosConfig = { headers: { Authorization: `Bearer ${token}` } };
           if (proxy) {
-            axiosConfig.httpsAgent = new HttpsProxyAgent(proxy);
+            axiosConfig.httpsAgent = new SocksProxyAgent(proxy);
             axiosConfig.proxy = false;
           }
 
@@ -557,6 +574,17 @@ async function startWorker() {
       } catch (err) {
         log("ERROR", "Send failed", { error: err.message, stack: err.stack });
 
+        const isProxyError =
+          err.code === "ECONNREFUSED" ||
+          err.code === "ETIMEDOUT" ||
+          err.message.toLowerCase().includes("socks5") ||
+          err.message.toLowerCase().includes("proxy");
+
+        if (isProxyError) {
+          log("WARN", "♻️ Proxy failure detected. Rotating sticky session for next send.", { sender: sender?.email });
+          await deleteProxySticky(sender?.email);
+        }
+
         if (emailRecord) {
           await emailRecord.update({
             status: "failed",
@@ -577,17 +605,47 @@ async function startWorker() {
             occurredAt: new Date(),
           });
 
+          // 🛡️ REPUTATION PROTECTION (GLOBAL GUARD)
+          if (bounceType === "hard" && sender) {
+            log("DEBUG", "🔍 Checking Global Bounce Limit for sender...", { senderId: sender.id });
+            const triggered = await senderHealthService.checkGlobalBounceLimit(sender.id);
+            if (triggered) {
+              log("CRITICAL", "🚫 Sender PAUSED PLATFORM-WIDE - Hard bounce threshold exceeded.", { sender: sender.email });
+            }
+          }
+
           // 📊 Increment campaign bounce stats
           if (emailRecord.campaignId) {
+            let incrementField = null;
             if (bounceType === "hard" || bounceType === "soft") {
-              await Campaign.increment("totalBounced", {
-                where: { id: emailRecord.campaignId },
-              });
+              incrementField = "totalBounced";
+            } else if (bounceType === "complaint") {
+              incrementField = "totalSenderBounced";
             }
-            if (bounceType === "complaint") {
-              await Campaign.increment("totalSenderBounced", {
+
+            if (incrementField) {
+              await Campaign.increment(incrementField, {
                 where: { id: emailRecord.campaignId },
               });
+
+              // 🛑 AUTO-PAUSE ON HIGH BOUNCE RATE (CAMPAIGN LEVEL)
+              const campaign = await Campaign.findByPk(emailRecord.campaignId, {
+                attributes: ["id", "status", "totalSent", "totalBounced"],
+              });
+
+              if (campaign && campaign.status === "running" && campaign.totalSent >= 50) {
+                const bounceRate = (campaign.totalBounced / campaign.totalSent) * 100;
+                if (bounceRate >= 5) {
+                  await campaign.update({
+                    status: "paused",
+                    pauseReason: `Auto-paused due to high bounce rate (${bounceRate.toFixed(2)}%). Domain reputation protection active.`,
+                  });
+                  log("WARN", "🚨 Campaign AUTO-PAUSED due to high bounce rate", {
+                    campaignId: campaign.id,
+                    bounceRate: `${bounceRate.toFixed(2)}%`,
+                  });
+                }
+              }
             }
           }
 

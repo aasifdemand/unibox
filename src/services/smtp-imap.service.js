@@ -1,6 +1,7 @@
 import nodemailer from "nodemailer";
 import Imap from "imap";
-import { HttpsProxyAgent } from "https-proxy-agent";
+import { SocksProxyAgent } from "socks-proxy-agent";
+import socks from "socks";
 import tls from "tls";
 
 export const verifySmtp = async ({ host, port, secure, user, password, proxy = null }) => {
@@ -18,6 +19,11 @@ export const verifySmtp = async ({ host, port, secure, user, password, proxy = n
     }
 
     const transporter = nodemailer.createTransport(transportConfig);
+
+    if (proxy && (proxy.startsWith("socks4") || proxy.startsWith("socks5"))) {
+      transporter.set("proxy_socks_module", socks);
+    }
+
     await transporter.verify();
 
     return { success: true };
@@ -44,19 +50,15 @@ export const verifyImap = async ({ host, port, secure, user, password, proxy = n
 
     // If proxy is provided, we need to handle the socket connection manually for node-imap
     if (proxy) {
-      const agent = new HttpsProxyAgent(proxy);
+      const agent = new SocksProxyAgent(proxy);
 
-      // HttpsProxyAgent.callback returns a socket/stream
+      // SocksProxyAgent.callback returns a socket
       agent.callback(
-        { protocol: secure ? "https:" : "http:", host, port: parseInt(port) },
+        { host, port: parseInt(port) },
         { rejectUnauthorized: false },
         (err, socket) => {
           if (err) {
-            let errorMsg = `Proxy connection failed: ${err.message}`;
-            if (err.message.includes("403")) {
-              errorMsg = `Proxy blocked the IMAP connection (403). Webshare and other providers often block IMAP ports (993) by default. Please ensure these ports are unblocked in your proxy dashboard or use a SOCKS5 proxy.`;
-            }
-            return reject(new Error(errorMsg));
+            return reject(new Error(`SOCKS Proxy connection failed: ${err.message}`));
           }
 
           // Wrap in TLS if requested

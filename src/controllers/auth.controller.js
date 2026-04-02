@@ -396,15 +396,28 @@ export const refreshToken = asyncHandler(async (req, res) => {
 
     const user = await User.findByPk(decoded.id);
 
-    if (!user || user.refreshToken !== refreshToken) {
+    if (!user) {
+      throw new AppError("User not found", 401);
+    }
+
+    // 🛡️ Grace Period Logic for Concurrent Refresh Requests
+    const isLatestToken = user.refreshToken === refreshToken;
+    const isInGracePeriod = user.previousRefreshToken === refreshToken && 
+                            user.refreshTokenRotatedAt && 
+                            (Date.now() - new Date(user.refreshTokenRotatedAt).getTime() < 15000);
+
+    if (!isLatestToken && !isInGracePeriod) {
+      console.warn(`[AUTH] Invalid refresh token attempt for user ${user.id}`);
       throw new AppError("Invalid refresh token", 401);
     }
 
     // Generate new tokens (Rotation)
     const { refreshToken: newRefreshToken } = setTokenCookies(res, user);
     
-    // Save new refresh token in DB
+    // Save rotation history to DB
+    user.previousRefreshToken = user.refreshToken;
     user.refreshToken = newRefreshToken;
+    user.refreshTokenRotatedAt = new Date();
     await user.save();
 
     res.ok({ message: "Token refreshed successfully" });

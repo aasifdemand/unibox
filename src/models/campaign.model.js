@@ -110,6 +110,11 @@ const Campaign = sequelize.define(
       type: DataTypes.INTEGER,
       defaultValue: 0,
     },
+    // Alias used by email-sender worker (kept in sync with totalBounces)
+    totalBounced: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+    },
     totalSenderBounced: {
       type: DataTypes.INTEGER,
       defaultValue: 0,
@@ -125,6 +130,19 @@ const Campaign = sequelize.define(
 
     completedAt: {
       type: DataTypes.DATE,
+    },
+
+    // Auto-pause: written when the campaign is paused automatically
+    pauseReason: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
+
+    // When false (default) risky-verified emails are allowed through.
+    // Set to true to hard-block any email whose verification status = 'risky'.
+    blockRiskyEmails: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
     },
 
     timezone: {

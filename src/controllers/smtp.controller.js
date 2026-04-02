@@ -21,13 +21,13 @@ import {
   createImapConnection,
   resolveFolder,
 } from "../utils/imap-helper.js";
-import { getNextProxy } from "../utils/proxy-fetcher.js";
+
 
 // Cache TTLs
-const CACHEerrTTL = {
+const CACHE_TTL = {
   MESSAGES: 1200, // 20 minutes
   FOLDERS: 1800, // 30 minutes
-  SINGLEerrMESSAGE: 3600, // 60 minutes
+  SINGLE_MESSAGE: 3600, // 60 minutes
 };
 
 // IMAP helper functions moved to ../utils/imap-helper.js
@@ -206,8 +206,14 @@ async function fetchSmtpMessagesForFolder(req, res, folder) {
       }
     }
 
-    // 2. Trigger background sync
-    queueMailboxSync(mailboxId, 'smtp');
+    // 2. Trigger background sync with simple throttling
+    const syncStatusKey = `sync:status:${mailboxId}`;
+    const isInSync = await getCachedData(syncStatusKey);
+
+    if (!isInSync) {
+      await setCachedData(syncStatusKey, 'syncing', 300); // 5 min lock
+      queueMailboxSync(mailboxId, 'smtp');
+    }
 
     // 3. Check Redis cache first (Legacy fallback)
     const cached = await getCachedData(cacheKey);
@@ -328,13 +334,15 @@ async function fetchSmtpMessagesForFolder(req, res, folder) {
       // Update last sync silently
       sender.update({ lastInboxSyncAt: new Date() }).catch(() => { });
 
-      await setCachedData(cacheKey, result, CACHEerrTTL.MESSAGES);
+      await setCachedData(cacheKey, result, CACHE_TTL.MESSAGES);
       res.json({ success: true, data: result });
     } finally {
-      try {
-        imap.end();
-      } catch (err) {
-        console.log(err);
+      if (imap && imap.state !== 'disconnected') {
+        try {
+          imap.end();
+        } catch (err) {
+          console.error("IMAP cleanup error:", err);
+        }
       }
     }
   });
@@ -499,13 +507,15 @@ export const getSmtpFolders = asyncHandler(async (req, res) => {
         folders: foldersWithCounts,
         flatList: foldersWithCounts,
       };
-      await setCachedData(cacheKey, result, CACHEerrTTL.FOLDERS);
+      await setCachedData(cacheKey, result, CACHE_TTL.FOLDERS);
       res.json({ success: true, data: result });
     } finally {
-      try {
-        imap.end();
-      } catch (err) {
-        console.log(err);
+      if (imap && imap.state !== 'disconnected') {
+        try {
+          imap.end();
+        } catch (err) {
+          console.warn("IMAP folder fetch cleanup error:", err);
+        }
       }
     }
   });
@@ -559,13 +569,15 @@ export const getSmtpMessage = asyncHandler(async (req, res) => {
       const message = parsedMessages[0];
       message.folder = folder;
 
-      await setCachedData(cacheKey, message, CACHEerrTTL.SINGLEerrMESSAGE);
+      await setCachedData(cacheKey, message, CACHE_TTL.SINGLE_MESSAGE);
       res.json({ success: true, data: message });
     } finally {
-      try {
-        imap.end();
-      } catch (err) {
-        console.log(err);
+      if (imap && imap.state !== 'disconnected') {
+        try {
+          imap.end();
+        } catch (err) {
+          console.error("IMAP message fetch cleanup error:", err);
+        }
       }
     }
   });
@@ -675,9 +687,9 @@ export const deleteSmtpMessage = asyncHandler(async (req, res) => {
       // Instant DB Sync: Remove from database
       try {
         await MailboxMessage.destroy({
-          where: { 
-            senderId: mailboxId, 
-            providerMessageId: `imap-${mailboxId}-${messageId}` 
+          where: {
+            senderId: mailboxId,
+            providerMessageId: `imap-${mailboxId}-${messageId}`
           }
         });
       } catch (dbError) {
@@ -935,7 +947,7 @@ export const sendSmtpMessage = asyncHandler(async (req, res) => {
     // Inject tracking
     const { injectTracking } = await import("../utils/tracking-injector.js");
     const emailId = (await import("crypto")).randomUUID();
-    
+
     const trackedHtml = injectTracking(html || body, emailId, {
       trackOpens: true,
       trackClicks: true,
@@ -1306,12 +1318,14 @@ export const getSmtpAttachments = asyncHandler(async (req, res) => {
           related: att.related,
         })) || [];
 
-      await setCachedData(cacheKey, attachments, CACHEerrTTL.SINGLEerrMESSAGE);
+      await setCachedData(cacheKey, attachments, CACHE_TTL.SINGLE_MESSAGE);
       res.json({ success: true, data: attachments });
     } finally {
-      try {
-        imap.end();
-      } catch (err) { }
+      if (imap && imap.state !== 'disconnected') {
+        try {
+          imap.end();
+        } catch (err) { }
+      }
     }
   });
 });

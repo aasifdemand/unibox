@@ -1,10 +1,13 @@
 import axios from "axios";
 import dotenv from "dotenv";
 
+import Redis from "ioredis";
+
 dotenv.config();
 
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || "http://localhost:11434";
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "phi2";
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "phi3:mini"; // Upgrading to phi3:mini for better speed/quality
+const redis = new Redis(process.env.REDIS_URL);
 
 /**
  * Extract JSON from a string (handles markdown blocks or preamble).
@@ -73,30 +76,43 @@ const callOllama = async (prompt, jsonMode = false) => {
  * Generate a sequence of emails based on a goal and tone.
  */
 export const generateSequence = async (goal, tone = "professional", stepsCount = 3, variables = []) => {
+  // Incremented version to v2 to invalidate old incompatible cached sequences
+  const cacheKey = `ai:seq:v2:${Buffer.from(`${goal}:${tone}:${stepsCount}`).toString("base64")}`;
+  
+  try {
+    const cached = await redis.get(cacheKey);
+    if (cached) {
+      console.log("⚡ AI Cache Hit: Returning cached sequence");
+      return JSON.parse(cached);
+    }
+  } catch (err) {
+    console.error("Redis Cache Error:", err.message);
+  }
+
   const varString = variables.length > 0
     ? variables.map(v => `{{${v}}}`).join(", ")
     : "{{first_name}}, {{company}}, {{sender_name}}, {{job_title}}, {{city}}";
 
-  const prompt = `You are an expert sales Copywriter specialized in outbound email sequences.
-Goal: ${goal}. Tone: ${tone}. Steps: ${stepsCount}. 
-Available Variables: ${varString}. 
+  const prompt = `Goal: ${goal}
+Tone: ${tone}
+Task: Write a ${stepsCount}-step sales sequence about this goal.
+Variables: ${varString}
+Format: Return ONLY a JSON array of objects with keys "subject" and "body".
 
-Task: Create a ${stepsCount}-step email sequence:
-1. Step 1 (Hook): Must be high-impact, personalized using variables, and focus on a problem-solution fit.
-2. Steps 2+ (Follow-ups): Must be short, concise (2-3 sentences max), and continue the thread of the first email naturally. 
-
-Persona Guidelines:
-- Avoid overly formal/robotic salutations, but ALWAYS include a professional sign-off (e.g. Best regards, Cheers, etc.) followed by {{sender_name}}.
-- Weave variables into sentences naturally—don't just list them.
-- Use {{sl_time_of_day}} and {{sl_day_of_week}} for context.
-
-Output: Return ONLY a JSON array of ${stepsCount} objects: [{"subject": "...", "body": "..."}].
-NO commentary. NO markdown. JUST RAW JSON.`;
+Requirements for "body":
+- Start with a salutation (e.g. "Hi {{first_name}},").
+- Use multiple paragraphs with double newlines (\n\n).
+- EVERY SINGLE STEP must end with a professional sign-off and {{sender_name}} (e.g. "Best,\n{{sender_name}}").
+- Example: [{"subject":"hi","body":"Hi {{first_name}},\n\nI hope you're well.\n\n[Body...]\n\nBest,\n{{sender_name}}"}]`;
 
   try {
-    console.log(`Attempting sequence generation with Ollama (${OLLAMA_MODEL}) - Steps: ${stepsCount}...`);
+    console.log(`🚀 Generating sequence (${OLLAMA_MODEL})...`);
     const text = await callOllama(prompt, true);
-    return extractJson(text);
+    const result = extractJson(text);
+    
+    // Cache for 24 hours
+    await redis.set(cacheKey, JSON.stringify(result), "EX", 86400);
+    return result;
   } catch (error) {
     console.error("AI Generation Failed:", error.message);
     throw error;
@@ -142,21 +158,16 @@ export const generateSequenceStream = async (goal, tone = "professional", stepsC
     ? variables.map(v => `{{${v}}}`).join(", ")
     : "{{first_name}}, {{company}}, {{sender_name}}, {{job_title}}, {{city}}";
 
-  const prompt = `You are an expert sales Copywriter specialized in outbound email sequences.
-Goal: ${goal}. Tone: ${tone}. Steps: ${stepsCount}. 
-Available Variables: ${varString}. 
+  const prompt = `Task: Create a ${stepsCount}-step sales email sequence.
+Goal: ${goal}
+Tone: ${tone}
+Variables: ${varString}
 
-Task: Create a ${stepsCount}-step email sequence:
-1. Step 1 (Hook): Must be high-impact, personalized using variables, and focus on a problem-solution fit.
-2. Steps 2+ (Follow-ups): Must be short, concise (2-3 sentences max), and continue the thread of the first email naturally. 
-
-Persona Guidelines:
-- Avoid overly formal/robotic salutations, but ALWAYS include a professional sign-off (e.g. Best regards, Cheers, etc.) followed by {{sender_name}}.
-- Weave variables into sentences naturally—don't just list them.
-- Use {{sl_time_of_day}} and {{sl_day_of_week}} for context.
-
-Output: Return ONLY a JSON array of ${stepsCount} objects: [{"subject": "...", "body": "..."}].
-NO commentary. NO markdown. JUST RAW JSON.`;
+Constraints:
+- Step 1: Hook & Solution focus.
+- Steps 2+: Short (2 sentences) thread follow-ups.
+- ALWAYS sign off with {{sender_name}}.
+- OUTPUT ONLY JSON ARRAY: [{"subject": "...", "body": "..."}]`;
 
   try {
     console.log(`Streaming sequence generation with Ollama (${OLLAMA_MODEL}) - Steps: ${stepsCount}...`);

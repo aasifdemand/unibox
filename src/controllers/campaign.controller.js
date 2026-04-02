@@ -14,12 +14,7 @@ import Email from "../models/email.model.js";
 import CampaignStep from "../models/campaign-step.model.js";
 import { Op } from "sequelize";
 import sequelize from "../config/db.js";
-import dayjs from "dayjs";
-import utc from "dayjs/plugin/utc.js";
-import timezone from "dayjs/plugin/timezone.js";
-
-dayjs.extend(utc);
-dayjs.extend(timezone);
+import { DateTime } from "luxon";
 
 /**
  * SEND TEST EMAIL
@@ -68,32 +63,36 @@ export const sendTestEmail = asyncHandler(async (req, res) => {
     finalBody = finalBody.replace(regex, val);
   });
 
-  // 2. Create a temporary Email record for tracking (optional, but good for logs)
-  const email = await Email.create({
-    userId: req.user.id,
-    campaignId: campaign.id,
-    senderId: campaign.senderId,
-    senderType: campaign.senderType,
-    recipientEmail: testEmail,
-    subject: `[TEST] ${finalSubject}`,
-    htmlBody: finalBody,
-    status: "pending",
-    metadata: { isTest: true }
-  });
+  // 2. Create a temporary Email record for tracking with a transaction
+  const emailId = await sequelize.transaction(async (t) => {
+    const email = await Email.create({
+      userId: req.user.id,
+      campaignId: campaign.id,
+      senderId: campaign.senderId,
+      senderType: campaign.senderType,
+      recipientEmail: testEmail,
+      subject: `[TEST] ${finalSubject}`,
+      htmlBody: finalBody,
+      status: "pending",
+      metadata: { isTest: true }
+    }, { transaction: t });
 
-  // 3. Queue for Routing (MTA Detection, Proxy Selection, etc.)
-  const { getRabbitChannel: getChannel } = await import("../queues/rabbit.js");
-  const { QUEUES } = await import("../queues/queues.js");
-  const channel = await getChannel();
-  
-  channel.sendToQueue(QUEUES.EMAIL_ROUTE, Buffer.from(JSON.stringify({
-    emailId: email.id
-  })), { persistent: true });
+    // 3. Queue for Routing (using a dummy placeholder to ensure consistency)
+    const { getRabbitChannel: getChannel } = await import("../queues/rabbit.js");
+    const { QUEUES } = await import("../queues/queues.js");
+    const channel = await getChannel();
+    
+    channel.sendToQueue(QUEUES.EMAIL_ROUTE, Buffer.from(JSON.stringify({
+      emailId: email.id
+    })), { persistent: true });
+
+    return email.id;
+  });
 
   res.json({
     success: true,
     message: `Test email sent to ${testEmail}`,
-    emailId: email.id
+    emailId
   });
 });
 
@@ -139,26 +138,28 @@ export const sendTestEmailStateless = asyncHandler(async (req, res) => {
     finalBody = finalBody.replace(regex, val);
   });
 
-  // 3. Create a temporary Email record
-  const email = await Email.create({
-    userId: req.user.id,
-    senderId: senderId,
-    senderType: senderType,
-    recipientEmail: testEmail,
-    subject: `[TEST] ${finalSubject}`,
-    htmlBody: finalBody,
-    status: "pending",
-    metadata: { isTest: true }
-  });
+  // 3. Create a temporary Email record with transaction
+  await sequelize.transaction(async (t) => {
+    const email = await Email.create({
+      userId: req.user.id,
+      senderId: senderId,
+      senderType: senderType,
+      recipientEmail: testEmail,
+      subject: `[TEST] ${finalSubject}`,
+      htmlBody: finalBody,
+      status: "pending",
+      metadata: { isTest: true }
+    }, { transaction: t });
 
-  // 4. Queue for Routing (MTA Detection, Proxy Selection, etc.)
-  const { getRabbitChannel: getChannel } = await import("../queues/rabbit.js");
-  const { QUEUES } = await import("../queues/queues.js");
-  const channel = await getChannel();
-  
-  channel.sendToQueue(QUEUES.EMAIL_ROUTE, Buffer.from(JSON.stringify({
-    emailId: email.id
-  })), { persistent: true });
+    // 4. Queue for Routing
+    const { getRabbitChannel: getChannel } = await import("../queues/rabbit.js");
+    const { QUEUES } = await import("../queues/queues.js");
+    const channel = await getChannel();
+    
+    channel.sendToQueue(QUEUES.EMAIL_ROUTE, Buffer.from(JSON.stringify({
+      emailId: email.id
+    })), { persistent: true });
+  });
 
   res.json({
     success: true,
@@ -372,82 +373,84 @@ export const createCampaign = asyncHandler(async (req, res) => {
     });
   }
 
-  console.log(sender);
-
   if (!sender) {
     throw new AppError(`Sender not found for type ${senderType}`, 400);
   }
 
-  // ALWAYS create as DRAFT - activation happens separately
-  const campaign = await Campaign.create({
-    userId: req.user.id,
-    senderId: senderId || (senderIds && senderIds[0]),
-    senderIds: senderIds || [senderId],
-    senderType,
-    listBatchId,
-    name,
-    subject,
-    htmlBody: htmlBody || "",
-    textBody: textBody || "",
-    previewText: previewText || "",
-    scheduledAt: scheduledAt
-      ? dayjs.tz(scheduledAt, timezone || req.user.timezone || "UTC").utc().toDate()
-      : null,
-    timezone: timezone || req.user.timezone || "UTC",
-    throttlePerMinute: throttlePerMinute || 10,
-    trackOpens: trackOpens !== undefined ? trackOpens : true,
-    trackClicks: trackClicks !== undefined ? trackClicks : true,
-    unsubscribeLink: unsubscribeLink !== undefined ? unsubscribeLink : true,
-    sendingDays: sendingDays || ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
-    startTime: startTime || '09:00',
-    endTime: endTime || '18:00',
-    sendingInterval: sendingInterval || 20,
-    maxLeadsPerDay: maxLeadsPerDay || 100,
-    startDate: startDate || null,
-    status: "draft", // ALWAYS draft initially
-    totalSent: 0,
-    totalReplied: 0,
-  });
+  // Use a transaction to ensure campaign and steps are created together
+  const fullCampaign = await sequelize.transaction(async (t) => {
+    // ALWAYS create as DRAFT - activation happens separately
+    const campaign = await Campaign.create({
+      userId: req.user.id,
+      senderId: senderId || (senderIds && senderIds[0]),
+      senderIds: senderIds || [senderId],
+      senderType,
+      listBatchId,
+      name,
+      subject,
+      htmlBody: htmlBody || "",
+      textBody: textBody || "",
+      previewText: previewText || "",
+      scheduledAt: scheduledAt
+        ? DateTime.fromISO(scheduledAt, { zone: timezone || req.user.timezone || "UTC" }).toUTC().toJSDate()
+        : null,
+      timezone: timezone || req.user.timezone || "UTC",
+      throttlePerMinute: throttlePerMinute || 10,
+      trackOpens: trackOpens !== undefined ? trackOpens : true,
+      trackClicks: trackClicks !== undefined ? trackClicks : true,
+      unsubscribeLink: unsubscribeLink !== undefined ? unsubscribeLink : true,
+      sendingDays: sendingDays || ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'],
+      startTime: startTime || '09:00',
+      endTime: endTime || '18:00',
+      sendingInterval: sendingInterval || 20,
+      maxLeadsPerDay: maxLeadsPerDay || 100,
+      startDate: startDate || null,
+      status: "draft", // ALWAYS draft initially
+      totalSent: 0,
+      totalReplied: 0,
+    }, { transaction: t });
 
-  /* =========================
-     MULTI-STEP SUPPORT
-  ========================= */
-  // Step 0 is always the main campaign content
-  await CampaignStep.create({
-    campaignId: campaign.id,
-    stepOrder: 0,
-    subject: campaign.subject,
-    htmlBody: campaign.htmlBody,
-    textBody: campaign.textBody,
-    delayMinutes: 0,
-    condition: "always",
-  });
+    /* =========================
+       MULTI-STEP SUPPORT
+    ========================= */
+    // Step 0 is always the main campaign content
+    await CampaignStep.create({
+      campaignId: campaign.id,
+      stepOrder: 0,
+      subject: campaign.subject,
+      htmlBody: campaign.htmlBody,
+      textBody: campaign.textBody,
+      delayMinutes: 0,
+      condition: "always",
+    }, { transaction: t });
 
-  // Create additional follow-up steps if provided
-  const { steps = [] } = req.body;
-  if (Array.isArray(steps) && steps.length > 0) {
-    const followUps = steps
-      .filter((s) => s.stepOrder > 0)
-      .map((s) => ({
-        ...s,
-        campaignId: campaign.id,
-      }));
-    if (followUps.length > 0) {
-      await CampaignStep.bulkCreate(followUps);
+    // Create additional follow-up steps if provided
+    const { steps = [] } = req.body;
+    if (Array.isArray(steps) && steps.length > 0) {
+      const followUps = steps
+        .filter((s) => s.stepOrder > 0)
+        .map((s) => ({
+          ...s,
+          campaignId: campaign.id,
+        }));
+      if (followUps.length > 0) {
+        await CampaignStep.bulkCreate(followUps, { transaction: t });
+      }
     }
-  }
 
-  // Reload campaign with steps to ensure consistent response
-  const fullCampaign = await Campaign.findOne({
-    where: { id: campaign.id },
-    include: [
-      {
-        model: CampaignStep,
-        as: "CampaignSteps",
-        separate: true,
-        order: [["stepOrder", "ASC"]],
-      },
-    ],
+    // Reload campaign with steps to ensure consistent response
+    return await Campaign.findOne({
+      where: { id: campaign.id },
+      include: [
+        {
+          model: CampaignStep,
+          as: "CampaignSteps",
+          separate: true,
+          order: [["stepOrder", "ASC"]],
+        },
+      ],
+      transaction: t
+    });
   });
 
   // DO NOT create recipients here - they are created during activation
@@ -512,10 +515,9 @@ export const updateCampaign = asyncHandler(async (req, res) => {
   if (senderIds !== undefined) updates.senderIds = senderIds;
   if (scheduledAt !== undefined)
     updates.scheduledAt = scheduledAt
-      ? dayjs
-          .tz(scheduledAt, timezone || campaign.timezone || req.user.timezone || "UTC")
-          .utc()
-          .toDate()
+      ? DateTime.fromISO(scheduledAt, { zone: timezone || campaign.timezone || req.user.timezone || "UTC" })
+          .toUTC()
+          .toJSDate()
       : null;
   if (timezone !== undefined) updates.timezone = timezone;
   if (throttlePerMinute !== undefined)
@@ -530,66 +532,70 @@ export const updateCampaign = asyncHandler(async (req, res) => {
   if (maxLeadsPerDay !== undefined) updates.maxLeadsPerDay = maxLeadsPerDay;
   if (startDate !== undefined) updates.startDate = startDate;
 
-  await campaign.update(updates);
+  const fullCampaign = await sequelize.transaction(async (t) => {
+    await campaign.update(updates, { transaction: t });
 
-  /* =========================
-     MULTI-STEP UPDATE
-  ========================= */
-  const { steps } = req.body;
-  if (steps !== undefined && Array.isArray(steps)) {
-    // 1. Sync Step 0 with Campaign content (to ensure orchestrator has it)
-    await CampaignStep.upsert({
-      campaignId: campaign.id,
-      stepOrder: 0,
-      subject: campaign.subject,
-      htmlBody: campaign.htmlBody,
-      textBody: campaign.textBody,
-      delayMinutes: 0,
-      condition: "always",
-    });
-
-    // 2. Clear existing follow-ups and recreate (simpler than complex diffing)
-    await CampaignStep.destroy({
-      where: {
+    /* =========================
+       MULTI-STEP UPDATE
+    ========================= */
+    const { steps } = req.body;
+    if (steps !== undefined && Array.isArray(steps)) {
+      // 1. Sync Step 0 with Campaign content (to ensure orchestrator has it)
+      await CampaignStep.upsert({
         campaignId: campaign.id,
-        stepOrder: { [Op.gt]: 0 },
-      },
-    });
+        stepOrder: 0,
+        subject: campaign.subject,
+        htmlBody: campaign.htmlBody,
+        textBody: campaign.textBody,
+        delayMinutes: 0,
+        condition: "always",
+      }, { transaction: t });
 
-    const followUps = steps
-      .filter((s) => s.stepOrder > 0)
-      .map((s) => ({
-        ...s,
+      // 2. Clear existing follow-ups and recreate (simpler than complex diffing)
+      await CampaignStep.destroy({
+        where: {
+          campaignId: campaign.id,
+          stepOrder: { [Op.gt]: 0 },
+        },
+        transaction: t
+      });
+
+      const followUps = steps
+        .filter((s) => s.stepOrder > 0)
+        .map((s) => ({
+          ...s,
+          campaignId: campaign.id,
+        }));
+
+      if (followUps.length > 0) {
+        await CampaignStep.bulkCreate(followUps, { transaction: t });
+      }
+    } else {
+      // If steps not provided, still sync Step 0 in case content changed
+      await CampaignStep.upsert({
         campaignId: campaign.id,
-      }));
-
-    if (followUps.length > 0) {
-      await CampaignStep.bulkCreate(followUps);
+        stepOrder: 0,
+        subject: campaign.subject,
+        htmlBody: campaign.htmlBody,
+        textBody: campaign.textBody,
+        delayMinutes: 0,
+        condition: "always",
+      }, { transaction: t });
     }
-  } else {
-    // If steps not provided, still sync Step 0 in case content changed
-    await CampaignStep.upsert({
-      campaignId: campaign.id,
-      stepOrder: 0,
-      subject: campaign.subject,
-      htmlBody: campaign.htmlBody,
-      textBody: campaign.textBody,
-      delayMinutes: 0,
-      condition: "always",
-    });
-  }
 
-  // Reload campaign with steps to ensure consistent response
-  const fullCampaign = await Campaign.findOne({
-    where: { id: campaign.id },
-    include: [
-      {
-        model: CampaignStep,
-        as: "CampaignSteps",
-        separate: true,
-        order: [["stepOrder", "ASC"]],
-      },
-    ],
+    // Reload campaign with steps to ensure consistent response
+    return await Campaign.findOne({
+      where: { id: campaign.id },
+      include: [
+        {
+          model: CampaignStep,
+          as: "CampaignSteps",
+          separate: true,
+          order: [["stepOrder", "ASC"]],
+        },
+      ],
+      transaction: t
+    });
   });
 
   res.json({
@@ -667,16 +673,19 @@ export const activateCampaign = asyncHandler(async (req, res) => {
     nextRunAt: activationTime,
   }));
 
-  await CampaignRecipient.bulkCreate(recipients, {
-    ignoreDuplicates: true,
-    validate: true,
-  });
+  await sequelize.transaction(async (t) => {
+    await CampaignRecipient.bulkCreate(recipients, {
+      ignoreDuplicates: true,
+      validate: true,
+      transaction: t
+    });
 
-  await campaign.update({
-    status: "scheduled",
-    scheduledAt: activationTime,
-    totalRecipients: recipients.length,
-    pendingRecipients: recipients.length,
+    await campaign.update({
+      status: "scheduled",
+      scheduledAt: activationTime,
+      totalRecipients: recipients.length,
+      pendingRecipients: recipients.length,
+    }, { transaction: t });
   });
 
   res.json({

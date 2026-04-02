@@ -1,5 +1,6 @@
 export function injectTracking(html, emailId, options = {}) {
-  const { trackOpens = true, trackClicks = true, baseUrl = process.env.APP_URL || "http://localhost:8080" } = options;
+  const defaultUrl = process.env.TRACKING_DOMAIN || process.env.APP_URL || "http://localhost:8080";
+  const { trackOpens = true, trackClicks = true, baseUrl = defaultUrl } = options;
   let trackedHtml = html;
 
   // 1. Inject Open Tracking Pixel

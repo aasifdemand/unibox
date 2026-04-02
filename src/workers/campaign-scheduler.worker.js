@@ -6,12 +6,8 @@ import CampaignRecipient from "../models/campaign-recipient.model.js";
 import GlobalEmailRegistry from "../models/global-email-registry.model.js";
 import { getRabbitChannel as getChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
-import dayjs from "dayjs";
-import utc from "dayjs/plugin/utc.js";
-import timezone from "dayjs/plugin/timezone.js";
+import { DateTime } from "luxon";
 import pLimit from "p-limit";
-dayjs.extend(utc);
-dayjs.extend(timezone);
 import { Op } from "sequelize";
 import { getSenderWithType } from "../models/index.js";
 import { DeliveryGuard } from "../utils/delivery-guard.js";
@@ -36,23 +32,27 @@ const limit = pLimit(20); // Process 20 campaigns in parallel
 
   const processCampaign = async (campaign) => {
     try {
+      const nowUtc = DateTime.now().toUTC();
+
       // 1. Status Activation Check
-      if (campaign.status === "scheduled" && (!campaign.scheduledAt || dayjs.utc().isAfter(campaign.scheduledAt))) {
-        await campaign.update({
-          status: "running",
-          scheduledAt: campaign.scheduledAt || new Date(),
-          startedAt: new Date()
-        });
-        log("INFO", "▶️ Campaign started", { campaignId: campaign.id });
+      if (campaign.status === "scheduled") {
+        const scheduledAt = DateTime.fromJSDate(campaign.scheduledAt).toUTC();
+        if (nowUtc >= scheduledAt) {
+          await campaign.update({
+            status: "running",
+            startedAt: new Date()
+          });
+          log("INFO", "▶️ Campaign started", { campaignId: campaign.id });
+        }
       }
 
       if (campaign.status !== "running") return;
 
       // 2. Sending Window Check
       const tz = campaign.timezone || "UTC";
-      const now = dayjs.utc().tz(tz);
-      const dayName = now.format("dddd").toLowerCase();
-      const currentTime = now.format("HH:mm");
+      const nowTz = DateTime.now().setZone(tz);
+      const dayName = nowTz.toFormat("EEEE").toLowerCase();
+      const currentTime = nowTz.toFormat("HH:mm");
 
       const allowedDays = campaign.sendingDays || ["monday", "tuesday", "wednesday", "thursday", "friday"];
       const startTime = campaign.startTime || "09:00";
@@ -81,7 +81,7 @@ const limit = pLimit(20); // Process 20 campaigns in parallel
       const health = await DeliveryGuard.canSendToday(sender);
       if (!health.allowed) return;
 
-      const startOfDay = dayjs.utc().tz(tz).startOf('day').utc().toDate();
+      const startOfDay = DateTime.now().setZone(tz).startOf('day').toUTC().toJSDate();
       const sentTodayCount = await CampaignRecipient.count({
         where: {
           campaignId: campaign.id,
@@ -127,7 +127,7 @@ const limit = pLimit(20); // Process 20 campaigns in parallel
         })), { persistent: true });
 
         const intervalMins = campaign.sendingInterval || 20;
-        await r.update({ nextRunAt: dayjs.utc().add(intervalMins, "minute").toDate() });
+        await r.update({ nextRunAt: DateTime.now().toUTC().plus({ minutes: intervalMins }).toJSDate() });
       }
     } catch (campaignErr) {
       log("ERROR", "❌ Error processing campaign", {

@@ -11,6 +11,7 @@ import { verifySmtp, verifyImap } from "../services/smtp-imap.service.js";
 import { senderHealthService } from "../services/sender-health.service.js";
 import { queueMailboxSync } from "../queues/mailbox.queue.js";
 import sequelize from "../config/db.js";
+import { getProxyForEmail } from "../utils/proxy-resolver.js";
 
 
 
@@ -62,24 +63,25 @@ export const createSender = asyncHandler(async (req, res) => {
     throw new AppError("Sender with this email already exists", 409);
   }
 
-  // Verify SMTP
+  // Verify SMTP & IMAP with server-side proxy resolution (Sticky 24h)
+  const socksProxy = await getProxyForEmail(emailLower);
+
   await verifySmtp({
     host: smtpHost,
     port: smtpPort,
     secure: smtpSecure,
     user: smtpUser,
     password: smtpPassword,
-    proxy: null,
+    proxy: socksProxy,
   });
 
-  // Verify IMAP
   await verifyImap({
     host: imapHost,
     port: imapPort,
     secure: imapSecure,
     user: imapUser,
     password: imapPassword,
-    proxy: null,
+    proxy: socksProxy,
   });
 
   const sender = await SmtpSender.create({
@@ -422,12 +424,15 @@ export const testSender = asyncHandler(async (req, res) => {
     }
   } else if (smtpSender) {
     try {
+      const socksProxy = await getProxyForEmail(sender.email);
+
       const smtpTest = await verifySmtp({
         host: sender.smtpHost,
         port: sender.smtpPort,
         secure: sender.smtpSecure,
         user: sender.smtpUsername,
         password: sender.smtpPassword,
+        proxy: socksProxy,
       });
 
       let imapTest = null;
@@ -438,6 +443,7 @@ export const testSender = asyncHandler(async (req, res) => {
           secure: sender.imapSecure,
           user: sender.imapUsername,
           password: sender.imapPassword,
+          proxy: socksProxy,
         });
       }
 

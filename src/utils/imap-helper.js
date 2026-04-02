@@ -1,4 +1,4 @@
-import { HttpsProxyAgent } from "https-proxy-agent";
+import { SocksProxyAgent } from "socks-proxy-agent";
 import tls from "tls";
 import Imap from "imap";
 import util from "util";
@@ -37,42 +37,54 @@ export function createImapConnection(sender, proxy = null) {
         };
 
         if (proxy) {
-            const agent = new HttpsProxyAgent(proxy);
+            const agent = new SocksProxyAgent(proxy);
             const secure = sender.imapSecure;
             const host = sender.imapHost;
             const port = sender.imapPort;
 
             agent.callback(
-                { protocol: secure ? "https:" : "http:", host, port },
+                { host, port },
                 { rejectUnauthorized: false },
                 (err, socket) => {
                     if (err) {
-                        if (err.message.includes("403")) {
-                            console.warn(`⚠️ IMAP Proxy blocked connection (403) for ${sender.email}. Falling back to direct.`);
-                            // Fallback to direct connection
-                            const imap = new Imap(imapConfig);
-                            imap.once("ready", () => handleReady(imap));
-                            imap.once("error", handleError);
-                            imap.connect();
-                            return;
-                        }
-                        return reject(new AppError(`IMAP Proxy connection failed: ${err.message}`, 500));
+                        if (socket) socket.destroy();
+                        return reject(new AppError(`IMAP SOCKS Proxy connection failed: ${err.message}`, 500));
                     }
+
+                    // Ensure socket is destroyed on any subsequent error before imap takes over
+                    socket.once("error", (sErr) => {
+                        socket.destroy();
+                        reject(new AppError(`Socket error during proxy handshake: ${sErr.message}`, 500));
+                    });
 
                     let connectionSocket = socket;
                     if (secure) {
-                        connectionSocket = tls.connect({
-                            socket: socket,
-                            host,
-                            port,
-                            rejectUnauthorized: false
-                        });
+                        try {
+                            connectionSocket = tls.connect({
+                                socket: socket,
+                                host,
+                                port,
+                                rejectUnauthorized: false
+                            });
+                            
+                            connectionSocket.once("error", (tErr) => {
+                                connectionSocket.destroy();
+                                reject(new AppError(`TLS handshake failed: ${tErr.message}`, 500));
+                            });
+                        } catch (tErr) {
+                            socket.destroy();
+                            return reject(new AppError(`TLS initiation failed: ${tErr.message}`, 500));
+                        }
                     }
 
                     const imap = new Imap({
                         ...imapConfig,
                         socket: connectionSocket,
                     });
+
+                    // Remove local error listeners before Imap takes ownership
+                    socket.removeAllListeners("error");
+                    if (connectionSocket !== socket) connectionSocket.removeAllListeners("error");
 
                     imap.once("ready", () => handleReady(imap));
                     imap.once("error", handleError);

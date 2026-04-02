@@ -13,7 +13,9 @@ import Email from "../models/email.model.js";
 import ReplyEvent from "../models/reply-event.model.js";
 import Campaign from "../models/campaign.model.js";
 import CampaignRecipient from "../models/campaign-recipient.model.js";
+import BounceEvent from "../models/bounce-event.model.js";
 import { emitToUser } from "../utils/event-broadcaster.js";
+import sequelize from "../config/db.js";
 
 import { getValidMicrosoftToken } from "../utils/get-valid-microsoft-token.js";
 import { refreshGoogleToken } from "../utils/refresh-google-token.js";
@@ -22,6 +24,7 @@ import { createImapConnection } from "../utils/imap-helper.js";
 import { syncLead } from "../services/crm-sync.service.js";
 import { syncLeadToAllCRMs } from "../services/crm-sync.provider.js";
 import { classifyIntent } from "../services/ai.service.js";
+import { getProxyForEmail } from "../utils/proxy-resolver.js";
 
 /* =========================
    LOGGER
@@ -58,58 +61,53 @@ async function processReply({ sender, email, reply }) {
 
     if (exists) return;
 
-    await ReplyEvent.create({
-      emailId: email.id,
-      campaignId: email.campaignId,
-      recipientId: email.recipientId,
+    await sequelize.transaction(async (t) => {
+      await ReplyEvent.create({
+        emailId: email.id,
+        campaignId: email.campaignId,
+        recipientId: email.recipientId,
+        replyFrom: reply.from,
+        replyTo: sender.email,
+        subject: reply.subject || "",
+        body: reply.body || "",
+        providerMessageId: reply.messageId,
+        providerThreadId: reply.threadId,
+        providerConversationId: reply.conversationId,
+        receivedAt: reply.receivedAt || new Date(),
+        metadata: reply.headers || {},
+      }, { transaction: t });
 
-      replyFrom: reply.from,
-      replyTo: sender.email,
+      // Update email
+      await email.update({
+        status: "replied",
+        repliedAt: reply.receivedAt || new Date(),
+      }, { transaction: t });
 
-      subject: reply.subject || "",
-      body: reply.body || "",
+      // Update recipient status and stop further steps
+      if (email.recipientId) {
+        const [updatedCount] = await CampaignRecipient.update(
+          { status: "replied", nextRunAt: null },
+          {
+            where: {
+              id: email.recipientId,
+              status: { [Op.ne]: "replied" }
+            },
+            transaction: t
+          },
+        );
 
-      providerMessageId: reply.messageId,
-      providerThreadId: reply.threadId,
-      providerConversationId: reply.conversationId,
-
-      receivedAt: reply.receivedAt || new Date(),
-      metadata: reply.headers || {},
-    });
-
-    // Update email
-    await email.update({
-      status: "replied",
-      repliedAt: reply.receivedAt || new Date(),
-    });
-
-    // Update recipient status and stop further steps
-    if (email.recipientId) {
-      const recipient = await CampaignRecipient.findByPk(email.recipientId);
-
-      const [updatedCount] = await CampaignRecipient.update(
-        {
-          status: "replied",
-          nextRunAt: null,
-        },
-        {
-          where: {
-            id: email.recipientId,
-            status: { [Op.ne]: "replied" } // Only update if not already replied
-          }
-        },
-      );
-
-      // Only increment campaign total if this is the FIRST reply from this recipient
-      if (updatedCount > 0) {
-        await Campaign.increment("totalReplied", {
-          by: 1,
-          where: { id: email.campaignId },
-        });
+        // Only increment campaign total if this is the FIRST reply from this recipient
+        if (updatedCount > 0) {
+          await Campaign.increment("totalReplied", {
+            by: 1,
+            where: { id: email.campaignId },
+            transaction: t
+          });
+        }
       }
-    }
 
-    await tryCompleteCampaign(email.campaignId);
+      await tryCompleteCampaign(email.campaignId, { transaction: t });
+    });
     // We let the campaign stay in 'running' status to keep tracking active and visible.
 
     log("INFO", "Reply processed successfully", {
@@ -396,8 +394,9 @@ async function ingestImapReplies(sender) {
 
     if (!messageIdMap.size) return;
 
-    // 3️⃣ Connect to IMAP (direct connection, no proxy)
-    const imap = await createImapConnection(sender, null);
+    // 3️⃣ Connect to IMAP (Resolve proxy server-side only)
+    const proxy = await getProxyForEmail(sender.email);
+    const imap = await createImapConnection(sender, proxy);
 
     return new Promise((resolve) => {
       imap.once("ready", () => {
@@ -472,7 +471,33 @@ async function ingestImapReplies(sender) {
 
                   const body = parsed.text || parsed.html || "(No content)";
 
-                  // 4️⃣ Process reply
+                  // 4️⃣ Detect if this is a spam complaint (ARF - Abuse Reporting Format)
+                  const isArfReport =
+                    parsed.headers.get("content-type")?.includes("report-type=feedback-report") ||
+                    parsed.headers.get("x-original-message-id") ||
+                    parsed.subject?.toLowerCase().includes("spam") ||
+                    parsed.subject?.toLowerCase().includes("abuse report");
+
+                  if (isArfReport) {
+                    log("WARN", "🚨 Detected SPAM complaint (ARF)", { emailId: matchedEmail.id });
+                    await BounceEvent.create({
+                      emailId: matchedEmail.id,
+                      bounceType: "complaint",
+                      reason: "Recipient marked as SPAM via provider button (ARF detected)",
+                      occurredAt: parsed.date || new Date(),
+                    });
+
+                    // Also auto-unsubscribe the recipient
+                    if (matchedEmail.recipientId) {
+                      await CampaignRecipient.update(
+                        { status: "unsubscribed", nextRunAt: null },
+                        { where: { id: matchedEmail.recipientId } },
+                      );
+                    }
+                    return; // Don't process as a regular reply
+                  }
+
+                  // 5️⃣ Process regular reply
                   await processReply({
                     sender,
                     email: matchedEmail,

@@ -100,6 +100,17 @@ const User = sequelize.define(
       allowNull: true,
     },
 
+    // 🛡️ Grace period support for rotation (prevents race conditions)
+    previousRefreshToken: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
+
+    refreshTokenRotatedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+
     designation: {
       type: DataTypes.STRING,
       allowNull: true,

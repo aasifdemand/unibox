@@ -39,6 +39,16 @@ const slugify = (text) => {
     .replace(/-+$/, ""); // Trim - from end of text
 };
 
+const calculateChecksum = (filePath) => {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash("sha256");
+    const stream = fs.createReadStream(filePath);
+    stream.on("data", (data) => hash.update(data));
+    stream.on("end", () => resolve(hash.digest("hex")));
+    stream.on("error", (err) => reject(err));
+  });
+};
+
 export const uploadList = async (req, res) => {
   try {
     // Ensure upload directory exists
@@ -64,12 +74,8 @@ export const uploadList = async (req, res) => {
       });
     }
 
-    // Calculate checksum
-    const fileBuffer = fs.readFileSync(file.path);
-    const checksum = crypto
-      .createHash("sha256")
-      .update(fileBuffer)
-      .digest("hex");
+    // 🛡️ Calculate checksum (Streaming)
+    const checksum = await calculateChecksum(file.path);
 
     // Check for duplicate upload
     const existingBatch = await ListUploadBatch.findOne({
@@ -95,6 +101,16 @@ export const uploadList = async (req, res) => {
       });
     }
 
+    // Capture mapping if provided
+    let mapping = null;
+    if (req.body.mapping) {
+      try {
+        mapping = typeof req.body.mapping === "string" ? JSON.parse(req.body.mapping) : req.body.mapping;
+      } catch (e) {
+        console.warn("Failed to parse mapping JSON:", e.message);
+      }
+    }
+
     // Create batch record
     const batch = await ListUploadBatch.create({
       userId,
@@ -103,12 +119,14 @@ export const uploadList = async (req, res) => {
       fileType: file.originalname.split(".").pop().toLowerCase(),
       checksum,
       status: "uploaded",
+      mapping, // Store the user's manual mapping
     });
 
     console.log(`✅ Batch created: ${batch.id}`);
 
     // Parse and process immediately (non-blocking)
-    processUploadedFile(batch.id, userId).catch((error) => {
+    // We pass the userId and batchId, enforcement of 10k limit will happen inside
+    processUploadedFile(batch.id).catch((error) => {
       console.error(`❌ Failed to process batch ${batch.id}:`, error);
     });
 
@@ -116,7 +134,7 @@ export const uploadList = async (req, res) => {
       success: true,
       batchId: batch.id,
       status: "uploaded",
-      message: "File accepted and processing started",
+      message: "File accepted and processing started. (Limit: 10,000 leads)",
     });
   } catch (error) {
     console.error("Upload error:", error);
@@ -138,17 +156,7 @@ export const uploadList = async (req, res) => {
   }
 };
 
-// CSV Parser function (was missing)
-const parseCSV = (filePath) => {
-  return new Promise((resolve, reject) => {
-    const results = [];
-    fs.createReadStream(filePath)
-      .pipe(csv())
-      .on("data", (data) => results.push(data))
-      .on("end", () => resolve(results))
-      .on("error", (error) => reject(error));
-  });
-};
+
 
 // Parse Excel
 const parseXLSX = (filePath) => {
@@ -296,226 +304,210 @@ const findNameField = (record) => {
   return null;
 };
 
-// Async processing function
+// Streaming process
 const processUploadedFile = async (batchId) => {
   let batch;
+  const LIMIT = 10000;
   try {
     batch = await ListUploadBatch.findByPk(batchId);
-    if (!batch) {
-      console.error(`Batch ${batchId} not found`);
-      return;
-    }
-
-    console.log(`🔄 Processing batch ${batchId}: ${batch.originalFilename}`);
-
-    // Check if file exists
-    if (!fs.existsSync(batch.storagePath)) {
-      throw new Error(`File not found: ${batch.storagePath}`);
-    }
+    if (!batch) return;
 
     await batch.update({ status: "parsing" });
 
-    let records = [];
-    switch (batch.fileType) {
-      case "csv":
-        console.log("📊 Parsing CSV file");
-        records = await parseCSV(batch.storagePath);
-        break;
-      case "xlsx":
-        console.log("📊 Parsing Excel file");
-        records = await parseXLSX(batch.storagePath);
-        break;
-      case "txt":
-        console.log("📊 Parsing text file");
-        records = await parseTXT(batch.storagePath);
-        break;
-      default:
-        throw new Error(`Unsupported file type: ${batch.fileType}`);
-    }
+    const allHeaders = new Set();
+    const batchRecords = [];
+    const uniqueEmailsInBatch = new Set();
 
-    console.log(`✅ Parsed ${records.length} records from file`);
+    let totalProcessed = 0;
+    let validCount = 0;
+    let duplicateCount = 0;
 
-    // Process records
-    await processRecords(batch, records);
+    const t = await sequelize.transaction();
 
-    // Enqueue email verification
-    console.log(`📨 Enqueuing email verification for batch ${batch.id}...`);
-    await enqueueEmailVerification(batch.id);
-    console.log(`✅ Email verification enqueued for batch ${batch.id}`);
-  } catch (error) {
-    console.error(`❌ Processing error for batch ${batchId}:`, error);
-
-    if (batch) {
-      await batch.update({
-        status: "failed",
-        errorReason: error.message,
-      });
-    }
-
-    // Clean up file
     try {
-      if (batch?.storagePath && fs.existsSync(batch.storagePath)) {
-        fs.unlinkSync(batch.storagePath);
-        console.log(`🧹 Cleaned up file: ${batch.storagePath}`);
+      if (batch.fileType === "csv") {
+        await new Promise((resolve, reject) => {
+          fs.createReadStream(batch.storagePath)
+            .pipe(csv())
+            .on("headers", (headers) => {
+              headers.forEach(h => allHeaders.add(h));
+            })
+            .on("data", (row) => {
+              totalProcessed++;
+              if (totalProcessed > LIMIT) {
+                // We'll handle the overflow in the 'end' or here
+                return;
+              }
+
+              const data = transformRow(row, batch.mapping);
+              if (data && !uniqueEmailsInBatch.has(data.normalizedEmail)) {
+                uniqueEmailsInBatch.add(data.normalizedEmail);
+                batchRecords.push({ ...data, batchId: batch.id });
+              }
+            })
+            .on("end", resolve)
+            .on("error", reject);
+        });
+      } else {
+        // Fallback for XLSX/TXT for now (can be optimized later if needed)
+        const records = batch.fileType === "xlsx" ? parseXLSX(batch.storagePath) : parseTXT(batch.storagePath);
+        totalProcessed = records.length;
+
+        if (totalProcessed <= LIMIT) {
+          for (const row of records) {
+            Object.keys(row).forEach(h => allHeaders.add(h));
+            const data = transformRow(row, batch.mapping);
+            if (data && !uniqueEmailsInBatch.has(data.normalizedEmail)) {
+              uniqueEmailsInBatch.add(data.normalizedEmail);
+              batchRecords.push({ ...data, batchId: batch.id });
+            }
+          }
+        }
       }
-    } catch (cleanupError) {
-      console.error("Failed to clean up file:", cleanupError);
+
+      if (totalProcessed > LIMIT) {
+        throw new Error(`File exceeds the maximum limit of ${LIMIT} leads.`);
+      }
+
+      // Step 2: Deduplicate against Global Registry
+      const uniqueEmails = Array.from(uniqueEmailsInBatch);
+      const existingEntries = await GlobalEmailRegistry.findAll({
+        where: { normalizedEmail: uniqueEmails },
+        attributes: ["normalizedEmail"],
+        transaction: t
+      });
+      const existingSet = new Set(existingEntries.map(e => e.normalizedEmail));
+
+      // Step 3: Prepare entities
+      const recordsToInsert = [];
+      const registryToCreate = [];
+
+      for (const record of batchRecords) {
+        const isNew = !existingSet.has(record.normalizedEmail);
+        if (isNew) validCount++; else duplicateCount++;
+
+        recordsToInsert.push({
+          batchId: batch.id,
+          rawEmail: record.rawEmail,
+          normalizedEmail: record.normalizedEmail,
+          domain: record.domain,
+          name: record.name,
+          metadata: record.metadata,
+          status: isNew ? "parsed" : "duplicate"
+        });
+
+        if (isNew) {
+          registryToCreate.push({
+            normalizedEmail: record.normalizedEmail,
+            domain: record.domain,
+            emailProvider: getEmailProvider(record.domain),
+            firstSeenAt: new Date(),
+            lastSeenAt: new Date()
+          });
+        }
+      }
+
+      // Step 4: Bulk Operations
+      if (registryToCreate.length > 0) {
+        await GlobalEmailRegistry.bulkCreate(registryToCreate, { ignoreDuplicates: true, transaction: t });
+      }
+
+      const CHUNK_SIZE = 1000;
+      for (let i = 0; i < recordsToInsert.length; i += CHUNK_SIZE) {
+        await ListUploadRecord.bulkCreate(recordsToInsert.slice(i, i + CHUNK_SIZE), { transaction: t });
+      }
+
+      await batch.update({
+        status: "completed",
+        totalRecords: totalProcessed,
+        validRecords: validCount,
+        duplicateRecords: duplicateCount,
+        mapping: Array.from(allHeaders).reduce((acc, h) => ({ ...acc, [slugify(h)]: h }), {}),
+        processedAt: new Date()
+      }, { transaction: t });
+
+      await t.commit();
+
+      // Finalize
+      await enqueueEmailVerification(batch.id);
+      emitToUser(batch.userId, "notification", {
+        type: "success",
+        title: "Import Successful",
+        message: `${validCount} leads imported from ${batch.originalFilename}.`
+      });
+
+    } catch (err) {
+      await t.rollback();
+      throw err;
     }
+
+  } catch (error) {
+    console.error(`❌ Batch ${batchId} failed:`, error.message);
+    if (batch) await batch.update({ status: "failed", errorReason: error.message });
+  } finally {
+    if (batch?.storagePath && fs.existsSync(batch.storagePath)) fs.unlinkSync(batch.storagePath);
   }
 };
 
-// Process and deduplicate records
-// Process and deduplicate records
-const processRecords = async (batch, records) => {
-  console.log(`🔄 Processing ${records.length} records for batch ${batch.id}`);
+const transformRow = (record, mapping = {}) => {
+  try {
+    // 1. Extract Email (Mapping -> Slugified Mapping -> Guessing)
+    let emailValue = null;
+    if (mapping.email) {
+      emailValue = record[mapping.email] || record[slugify(mapping.email)];
+    }
+    if (!emailValue) emailValue = findEmailField(record);
 
-  const batchRecords = [];
-  const normalizedToRaw = new Map();
-  const validRecordsData = [];
-  const allHeaders = new Set();
+    if (!emailValue || !isValidEmail(emailValue)) return null;
 
-  // Step 1: Pre-process and validate
-  for (const record of records) {
-    // Collect all headers
-    Object.keys(record).forEach(key => allHeaders.add(key));
+    const normalizedEmail = normalizeEmail(emailValue);
+    if (!normalizedEmail) return null;
 
-    try {
-      const emailValue = findEmailField(record);
-      if (!emailValue || !isValidEmail(emailValue)) continue;
+    const domain = extractDomain(normalizedEmail);
+    if (!domain) return null;
 
-      const normalizedEmail = normalizeEmail(emailValue);
-      if (!normalizedEmail) continue;
+    // 2. Extract Name
+    let name = null;
+    if (mapping.name) {
+      name = record[mapping.name] || record[slugify(mapping.name)];
+    }
+    if (!name) name = findNameField(record);
 
-      const domain = extractDomain(normalizedEmail);
-      if (!domain) continue;
-
-      const name = findNameField(record);
-
-      // Clean and slugify metadata
-      const metadata = {};
-      Object.keys(record).forEach((key) => {
-        const slug = slugify(key);
-        if (!slug.includes("email") && !slug.includes("name")) {
-          metadata[slug] = record[key];
+    // 3. Extract Metadata
+    const metadata = {};
+    
+    // Explicitly add mapped fields to metadata if they exist
+    const explicitMeta = ['company', 'phone', 'title', 'jobTitle', 'city', 'country', 'firstName', 'lastName'];
+    explicitMeta.forEach(field => {
+      const key = mapping[field];
+      if (key) {
+        const val = record[key] || record[slugify(key)];
+        if (val !== undefined && val !== null) {
+          metadata[field] = String(val).trim();
         }
-      });
-
-      validRecordsData.push({
-        emailValue,
-        normalizedEmail,
-        domain,
-        name,
-        metadata,
-        originalRecord: record,
-      });
-
-      if (!normalizedToRaw.has(normalizedEmail)) {
-        normalizedToRaw.set(normalizedEmail, { domain });
       }
-    } catch (err) {
-      console.log("error: ", err);
-
-      // Logic for invalid records can stay as is or be simplified
-    }
-  }
-
-  // Step 2: Bulk Registry Lookup
-  const uniqueEmails = Array.from(normalizedToRaw.keys());
-  const existingRegistryEntries = await GlobalEmailRegistry.findAll({
-    where: { normalizedEmail: uniqueEmails },
-    attributes: ["normalizedEmail", "id"],
-  });
-
-  const existingEmailSet = new Set(
-    existingRegistryEntries.map((e) => e.normalizedEmail),
-  );
-
-  // Step 3: Map results to batch records
-  let validCount = 0;
-  let duplicateCount = 0;
-  let failedCount = 0;
-
-  for (const data of validRecordsData) {
-    const isNew = !existingEmailSet.has(data.normalizedEmail);
-    if (isNew) {
-      validCount++;
-    } else {
-      duplicateCount++;
-    }
-
-    batchRecords.push({
-      batchId: batch.id,
-      rawEmail: data.emailValue,
-      normalizedEmail: data.normalizedEmail,
-      domain: data.domain,
-      name: data.name || null,
-      metadata: Object.keys(data.metadata).length > 0 ? data.metadata : null,
-      status: isNew ? "parsed" : "duplicate",
-      failureReason: null,
     });
-  }
 
-  // Step 4: Bulk Registry Upsert (Simplified)
-  const registryToCreate = uniqueEmails
-    .filter((email) => !existingEmailSet.has(email))
-    .map((email) => ({
-      normalizedEmail: email,
-      domain: normalizedToRaw.get(email).domain,
-      emailProvider: getEmailProvider(normalizedToRaw.get(email).domain),
-      firstSeenAt: new Date(),
-      lastSeenAt: new Date(),
-    }));
-
-  if (registryToCreate.length > 0) {
-    await GlobalEmailRegistry.bulkCreate(registryToCreate, {
-      ignoreDuplicates: true,
+    // Also include all other original fields as metadata (excluding already handled ones)
+    Object.keys(record).forEach((key) => {
+      const slug = slugify(key);
+      // Skip fields that are core or already mapped
+      const isMapped = Object.values(mapping).some(v => v === key || slugify(v) === slug);
+      if (!isMapped && !slug.includes("email") && !slug.includes("name")) {
+        metadata[slug] = record[key];
+      }
     });
-  }
 
-  // Bulk update lastSeenAt for existing (Optional but good for tracking)
-  if (existingEmailSet.size > 0) {
-    await GlobalEmailRegistry.update(
-      { lastSeenAt: new Date() },
-      { where: { normalizedEmail: Array.from(existingEmailSet) } },
-    );
-  }
-
-  // Step 5: Bulk Insert Batch Records
-  if (batchRecords.length > 0) {
-    const CHUNK_SIZE = 1000;
-    for (let i = 0; i < batchRecords.length; i += CHUNK_SIZE) {
-      const chunk = batchRecords.slice(i, i + CHUNK_SIZE);
-      await ListUploadRecord.bulkCreate(chunk, { ignoreDuplicates: true });
-    }
-  }
-
-  // Update batch statistics
-  await batch.update({
-    status: "completed",
-    totalRecords: records.length,
-    validRecords: validCount,
-    duplicateRecords: duplicateCount,
-    failedRecords: failedCount,
-    mapping: Array.from(allHeaders).reduce((acc, header) => {
-      const slug = slugify(header);
-      acc[slug] = header;
-      return acc;
-    }, {}),
-    processedAt: new Date(),
-  });
-
-  console.log(`✅ Processing complete for batch ${batch.id}`);
-
-  emitToUser(batch.userId, "notification", {
-    type: "success",
-    category: "audience",
-    title: "Bulk Import Successful",
-    message: `${validCount} valid leads were successfully imported from "${batch.originalFilename}".`,
-  });
-
-  // Clean up
-  if (batch.storagePath && fs.existsSync(batch.storagePath)) {
-    fs.unlinkSync(batch.storagePath);
+    return {
+      rawEmail: emailValue,
+      normalizedEmail,
+      domain,
+      name,
+      metadata: Object.keys(metadata).length > 0 ? metadata : null
+    };
+  } catch (error) {
+    console.error("Row transformation error:", error);
+    return null;
   }
 };
 

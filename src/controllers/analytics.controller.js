@@ -1,5 +1,5 @@
 import { Op, Sequelize } from "sequelize";
-import dayjs from "dayjs";
+import { DateTime } from "luxon";
 import Campaign from "../models/campaign.model.js";
 import CampaignSend from "../models/campaign-send.model.js";
 import Email from "../models/email.model.js";
@@ -12,6 +12,12 @@ import SmtpSender from "../models/smtp-sender.model.js";
 import { getCachedData, setCachedData } from "../utils/redis-client.js";
 
 const CACHE_TTL = 900; // 15 minutes
+
+const isValidTz = (tz) => {
+  if (!tz) return true;
+  // Basic validation: Allow alphanumeric, /, _, -
+  return /^[A-Za-z0-9\/_\-]+$/.test(tz);
+};
 
 // =========================
 // GLOBAL OVERVIEW
@@ -235,43 +241,44 @@ export const getTimelineData = asyncHandler(async (req, res) => {
   let format;
   let count;
 
-  const userTz = req.user.timezone || "UTC";
-  const now = dayjs().tz(userTz);
+  const userTzInput = req.user.timezone || "UTC";
+  const userTz = isValidTz(userTzInput) ? userTzInput : "UTC";
+  const now = DateTime.now().setZone(userTz);
 
   switch (period) {
     case "day":
       truncateBy = "hour";
-      startDate = now.subtract(23, "hour").startOf("hour");
+      startDate = now.minus({ hours: 23 }).startOf("hour");
       unit = "hour";
-      format = "YYYY-MM-DD HH:00";
+      format = "yyyy-MM-dd HH:00";
       count = 24;
       break;
     case "week":
       truncateBy = "day";
-      startDate = now.subtract(6, "day").startOf("day");
+      startDate = now.minus({ days: 6 }).startOf("day");
       unit = "day";
-      format = "YYYY-MM-DD";
+      format = "yyyy-MM-dd";
       count = 7;
       break;
     case "month":
       truncateBy = "day";
-      startDate = now.subtract(29, "day").startOf("day");
+      startDate = now.minus({ days: 29 }).startOf("day");
       unit = "day";
-      format = "YYYY-MM-DD";
+      format = "yyyy-MM-dd";
       count = 30;
       break;
     case "year":
       truncateBy = "month";
-      startDate = now.subtract(11, "month").startOf("month");
+      startDate = now.minus({ months: 11 }).startOf("month");
       unit = "month";
-      format = "YYYY-MM";
+      format = "yyyy-MM";
       count = 12;
       break;
     default:
       truncateBy = "day";
-      startDate = now.subtract(6, "day").startOf("day");
+      startDate = now.minus({ days: 6 }).startOf("day");
       unit = "day";
-      format = "YYYY-MM-DD";
+      format = "yyyy-MM-dd";
       count = 7;
   }
 
@@ -283,7 +290,7 @@ export const getTimelineData = asyncHandler(async (req, res) => {
     where: {
       sentAt: {
         [Op.ne]: null,
-        [Op.gte]: startDate.utc().toDate(), // DB is in UTC
+        [Op.gte]: startDate.toUTC().toJSDate(), // DB is in UTC
       },
     },
     include: [
@@ -338,18 +345,20 @@ export const getTimelineData = asyncHandler(async (req, res) => {
   // Zero-padding logic
   const result = [];
   const dbDataMap = timeline.reduce((acc, item) => {
-    const key = dayjs.tz(item.date, userTz).format(format);
+    // Note: Sequelize/Postgres might return a string or a Date object for the "date" field
+    const dateObj = typeof item.date === 'string' ? DateTime.fromISO(item.date) : DateTime.fromJSDate(item.date);
+    const key = dateObj.setZone(userTz).toFormat(format);
     acc[key] = item;
     return acc;
   }, {});
 
   for (let i = 0; i < count; i++) {
-    const d = startDate.add(i, unit);
-    const key = d.format(format);
+    const d = startDate.plus({ [unit + 's']: i });
+    const key = d.toFormat(format);
     const dbItem = dbDataMap[key];
 
     result.push({
-      date: d.toISOString(),
+      date: d.toISO(),
       sent: dbItem ? parseInt(dbItem.sent) : 0,
       opens: dbItem ? parseInt(dbItem.opens) : 0,
       replies: dbItem ? parseInt(dbItem.replies) : 0,
@@ -562,7 +571,8 @@ export const getSenderStats = asyncHandler(async (req, res) => {
 export const getHourlyStats = asyncHandler(async (req, res) => {
   const userId = req.user.id;
 
-  const userTz = req.user.timezone || "UTC";
+  const userTzInput = req.user.timezone || "UTC";
+  const userTz = isValidTz(userTzInput) ? userTzInput : "UTC";
   // Timezone-aware hour extraction
   const hourField = `EXTRACT(HOUR FROM "CampaignSend"."sentAt" AT TIME ZONE 'UTC' AT TIME ZONE '${userTz}')`;
   const hourAttr = [Sequelize.literal(hourField), "hour"];
