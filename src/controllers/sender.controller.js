@@ -211,38 +211,65 @@ export const bulkCreateSenders = asyncHandler(async (req, res) => {
 // =========================
 export const listSenders = asyncHandler(async (req, res) => {
   const userId = req.user.id;
+  const { search = "", type = "all", page = 1, limit = 10 } = req.query;
 
-  const [smtpSenders, gmailSenders, outlookSenders] = await Promise.all([
-    SmtpSender.findAll({
+  const typeFilter = type === "all" ? ["smtp", "gmail", "outlook"] : type.split(",");
+  const searchLower = search.toLowerCase().trim();
+
+  // Conditional fetching based on type filter
+  const promises = [];
+  if (typeFilter.includes("smtp")) {
+    promises.push(SmtpSender.findAll({
       where: { userId },
       attributes: { exclude: ["smtpPassword", "imapPassword"] },
       paranoid: false,
-    }),
-    GmailSender.findAll({
+    }).then(results => results.map(s => ({ ...s.toJSON(), type: "smtp" }))));
+  } else {
+    promises.push(Promise.resolve([]));
+  }
+
+  if (typeFilter.includes("gmail")) {
+    promises.push(GmailSender.findAll({
       where: { userId },
       attributes: { exclude: ["accessToken", "refreshToken", "googleProfile"] },
       paranoid: false,
-    }),
-    OutlookSender.findAll({
+    }).then(results => results.map(s => ({ ...s.toJSON(), type: "gmail" }))));
+  } else {
+    promises.push(Promise.resolve([]));
+  }
+
+  if (typeFilter.includes("outlook")) {
+    promises.push(OutlookSender.findAll({
       where: { userId },
       attributes: { exclude: ["accessToken", "refreshToken"] },
       paranoid: false,
-    }),
-  ]);
+    }).then(results => results.map(s => ({ ...s.toJSON(), type: "outlook" }))));
+  } else {
+    promises.push(Promise.resolve([]));
+  }
 
-  const allSenderIds = [
-    ...gmailSenders.map((s) => s.id),
-    ...outlookSenders.map((s) => s.id),
-    ...smtpSenders.map((s) => s.id),
-  ];
+  const [smtpSenders, gmailSenders, outlookSenders] = await Promise.all(promises);
+
+  let allSenders = [...smtpSenders, ...gmailSenders, ...outlookSenders];
+
+  // Apply Search Filter (In-memory since it spans multiple tables)
+  if (searchLower) {
+    allSenders = allSenders.filter(s => 
+      (s.email && s.email.toLowerCase().includes(searchLower)) ||
+      (s.displayName && s.displayName.toLowerCase().includes(searchLower)) ||
+      (s.domain && s.domain.toLowerCase().includes(searchLower))
+    );
+  }
+
+  const allSenderIds = allSenders.map(s => s.id);
 
   if (allSenderIds.length === 0) {
     return res.json({
       success: true,
       data: [],
       count: 0,
-      pagination: { total: 0, page: 1, limit: 10, pages: 0 },
-      countsByType: { smtp: 0, gmail: 0, outlook: 0 },
+      pagination: { total: 0, page: parseInt(page), limit: parseInt(limit), pages: 0 },
+      countsByType: { smtp: smtpSenders.length, gmail: gmailSenders.length, outlook: outlookSenders.length },
     });
   }
 
@@ -269,41 +296,23 @@ export const listSenders = asyncHandler(async (req, res) => {
     }),
   ]);
 
-  const campaignCountMap = Object.fromEntries(
-    campaignCounts.map((c) => [c.senderId, parseInt(c.count)])
-  );
-  const leadCountMap = Object.fromEntries(
-    leadCounts.map((l) => [l.senderId, parseInt(l.count)])
-  );
+  const campaignCountMap = Object.fromEntries(campaignCounts.map(c => [c.senderId, parseInt(c.count)]));
+  const leadCountMap = Object.fromEntries(leadCounts.map(l => [l.senderId, parseInt(l.count)]));
 
-  const allSenders = [
-    ...smtpSenders.map((sender) => ({
-      ...sender.toJSON(),
-      type: "smtp",
-      campaignCount: campaignCountMap[sender.id] || 0,
-      leadCount: leadCountMap[sender.id] || 0,
-    })),
-    ...gmailSenders.map((sender) => ({
-      ...sender.toJSON(),
-      type: "gmail",
-      campaignCount: campaignCountMap[sender.id] || 0,
-      leadCount: leadCountMap[sender.id] || 0,
-    })),
-    ...outlookSenders.map((sender) => ({
-      ...sender.toJSON(),
-      type: "outlook",
-      campaignCount: campaignCountMap[sender.id] || 0,
-      leadCount: leadCountMap[sender.id] || 0,
-    })),
-  ];
+  // Attach dynamic stats
+  allSenders = allSenders.map(sender => ({
+    ...sender,
+    campaignCount: campaignCountMap[sender.id] || 0,
+    leadCount: leadCountMap[sender.id] || 0,
+  }));
 
   allSenders.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
   const totalCount = allSenders.length;
-  const page = parseInt(req.query.page) || 1;
-  const limit = parseInt(req.query.limit) || 10;
-  const offset = (page - 1) * limit;
-  const paginatedSenders = allSenders.slice(offset, offset + limit);
+  const p = parseInt(page) || 1;
+  const l = parseInt(limit) || 10;
+  const offset = (p - 1) * l;
+  const paginatedSenders = allSenders.slice(offset, offset + l);
 
   res.json({
     success: true,
@@ -311,9 +320,9 @@ export const listSenders = asyncHandler(async (req, res) => {
     count: paginatedSenders.length,
     pagination: {
       total: totalCount,
-      page,
-      limit,
-      pages: Math.ceil(totalCount / limit),
+      page: p,
+      limit: l,
+      pages: Math.ceil(totalCount / l),
     },
     countsByType: {
       smtp: smtpSenders.length,
