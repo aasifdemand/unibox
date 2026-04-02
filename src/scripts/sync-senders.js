@@ -5,6 +5,9 @@
  * and index them into Elasticsearch.
  */
 
+import dotenv from "dotenv";
+dotenv.config();
+
 import "../models/index.js";
 import { initGlobalErrorHandlers } from "../utils/error-handler.js";
 initGlobalErrorHandlers();

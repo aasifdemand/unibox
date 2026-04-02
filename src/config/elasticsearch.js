@@ -42,7 +42,7 @@ export function getElasticsearchClient() {
     // Brute-force auth header failsafe
     const authBuffer = Buffer.from(`${username}:${password}`).toString("base64");
     options.headers["Authorization"] = `Basic ${authBuffer}`;
-    
+
     const maskedPass = (password || "").substring(0, 2) + "***";
     console.log(`🔑 ES Auth detected: user=${username}, pass=${maskedPass}`);
   }
