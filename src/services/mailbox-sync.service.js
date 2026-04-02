@@ -22,8 +22,8 @@ class MailboxSyncService {
   async syncMailbox(senderId, senderType) {
     console.log(`[MailboxSync] Starting sync for ${senderType}:${senderId}`);
     
+    let sender;
     try {
-      let sender;
       if (senderType === 'gmail') sender = await GmailSender.findByPk(senderId);
       else if (senderType === 'outlook') sender = await OutlookSender.findByPk(senderId);
       else if (senderType === 'smtp') sender = await SmtpSender.findByPk(senderId);
@@ -36,32 +36,40 @@ class MailboxSyncService {
       // 1. Sync Folders
       const folders = await this.syncFolders(sender, senderType);
       
+      // Update Sync Timestamp early to provide feedback
+      await sender.update({ lastInboxSyncAt: new Date() });
+      emitToUser(sender.userId, 'mailbox_synced', {
+        senderId: sender.id,
+        senderType,
+        partial: true
+      });
+
       // 2. Sync Messages for each folder (Prioritizing INBOX)
       if (folders && folders.length > 0) {
-        // Prioritize inbox for immediate UI feedback
-        const inbox = folders.find(f => f.folderType === 'inbox' || f.name.toLowerCase() === 'inbox');
+        // Broaden inbox detection for Outlook and localized Gmail
+        const inbox = folders.find(f => 
+          f.folderType === 'inbox' || 
+          f.name.toLowerCase() === 'inbox' || 
+          f.providerFolderId?.toLowerCase() === 'inbox'
+        );
+
         if (inbox) {
           try {
             await this.syncMessages(sender, senderType, inbox);
-            // 3. Update Sender Sync Timestamp IMMEDIATELY after Inbox for feedback
-            await sender.update({ lastInboxSyncAt: new Date() });
-            
-            // Notify UI early that primary sync is done
-            emitToUser(sender.userId, 'mailbox_synced', {
-              senderId: sender.id,
-              senderType,
-              partial: true
-            });
           } catch (err) {
             console.error(`[MailboxSync] Error syncing Inbox for ${sender.email}:`, err.message);
           }
         }
 
-        // Then sync other common folders with resilience (one failure doesn't block the rest)
+        // Then sync other common folders with resilience
         for (const folder of folders) {
           if (folder.id !== inbox?.id) {
             try {
-              await this.syncMessages(sender, senderType, folder);
+              // Only sync major folders or recent changes to avoid long hangs
+              const isMajor = ['sent', 'trash', 'spam', 'drafts', 'archive'].includes(folder.folderType);
+              if (isMajor) {
+                await this.syncMessages(sender, senderType, folder);
+              }
             } catch (err) {
               console.error(`[MailboxSync] Error syncing folder ${folder.name} for ${sender.email}:`, err.message);
             }
@@ -69,16 +77,29 @@ class MailboxSyncService {
         }
       }
 
+      // Final Heartbeat Update
+      if (sender) await sender.update({ lastInboxSyncAt: new Date() });
       console.log(`[MailboxSync] Full sync completed for ${senderType}:${senderId}`);
       
       // Notify UI
-      emitToUser(sender.userId, 'mailbox_synced', {
-        senderId: sender.id,
-        senderType
-      });
+      if (sender) {
+        emitToUser(sender.userId, 'mailbox_synced', {
+          senderId: sender.id,
+          senderType
+        });
+      }
 
     } catch (error) {
       console.error(`[MailboxSync] Error syncing ${senderType}:${senderId}:`, error.message);
+      // Even on error, update timestamp if we reached this point
+      if (sender) {
+        try {
+          await sender.update({ lastInboxSyncAt: new Date() });
+          emitToUser(sender.userId, 'mailbox_synced', { senderId: sender.id, senderType });
+        } catch {
+          // Ignore secondary update errors
+        }
+      }
     }
   }
 
