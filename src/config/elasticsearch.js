@@ -5,7 +5,10 @@ let client = null;
 export function getElasticsearchClient() {
   if (client) return client;
 
-  const url = process.env.ELASTICSEARCH_URL;
+  let url = process.env.ELASTICSEARCH_URL;
+  if (url && url.includes("localhost")) {
+    url = url.replace("localhost", "127.0.0.1");
+  }
 
   if (!url) {
     console.warn("⚠️  ELASTICSEARCH_URL not set — search features disabled.");
@@ -15,8 +18,10 @@ export function getElasticsearchClient() {
   const options = {
     node: url,
     requestTimeout: 60000,
+    maxRetries: 3,
     sniffOnStart: false,
     sniffOnConnectionFault: false,
+    agent: false, // Disable pooling to ensure fresh connections on VPS
     ssl: {
       rejectUnauthorized: false,
     },
