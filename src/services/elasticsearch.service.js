@@ -179,71 +179,21 @@ export async function initIndices() {
 
 export async function upsertDocument(index, id, doc) {
   const es = getElasticsearchClient();
-  
-  // 🛡️ RAW HTTP FALLBACK
-  const rawUpsert = async () => {
-    const username = (process.env.ELASTICSEARCH_USERNAME || "elastic").trim();
-    const password = (process.env.ELASTICSEARCH_PASSWORD || "").trim();
-    const url = (process.env.ELASTICSEARCH_URL || "http://127.0.0.1:9201").trim().replace("localhost", "127.0.0.1");
-    
-    let finalPass = password;
-    try { if (password.includes("%")) finalPass = decodeURIComponent(password); } catch(e) {}
-    const auth = Buffer.from(`${username}:${finalPass}`).toString("base64");
-    
-    const axios = (await import("axios")).default;
-    await axios.put(`${url}/${index}/_doc/${id}?refresh=true`, doc, {
-      headers: {
-        "Authorization": `Basic ${auth}`,
-        "Content-Type": "application/json",
-        "x-elastic-product-origin": "elasticsearch"
-      }
-    });
-  };
-
+  if (!es) return;
   try {
-    if (!es) { await rawUpsert(); return; }
     await es.index({ index, id, body: doc, refresh: true });
   } catch (err) {
-    try {
-      await rawUpsert();
-      console.log(`✅ ES upsert [RAW FALLBACK] [${index}/${id}]`);
-    } catch (rawErr) {
-      console.error(`❌ ES upsert failed [${index}/${id}]:`, err.message);
-      if (rawErr.response) console.error("   → Raw HTTP Error:", rawErr.response.status, rawErr.response.data?.error?.reason || rawErr.response.data);
-    }
+    console.error(`❌ ES upsert failed [${index}/${id}]:`, err.message);
   }
 }
 
 export async function deleteDocument(index, id) {
   const es = getElasticsearchClient();
-  
-  const rawDelete = async () => {
-    const username = (process.env.ELASTICSEARCH_USERNAME || "elastic").trim();
-    const password = (process.env.ELASTICSEARCH_PASSWORD || "").trim();
-    const url = (process.env.ELASTICSEARCH_URL || "http://127.0.0.1:9201").trim().replace("localhost", "127.0.0.1");
-    
-    let finalPass = password;
-    try { if (password.includes("%")) finalPass = decodeURIComponent(password); } catch(e) {}
-    const auth = Buffer.from(`${username}:${finalPass}`).toString("base64");
-    
-    const axios = (await import("axios")).default;
-    await axios.delete(`${url}/${index}/_doc/${id}?refresh=true`, {
-      headers: {
-        "Authorization": `Basic ${auth}`,
-        "x-elastic-product-origin": "elasticsearch"
-      }
-    });
-  };
-
+  if (!es) return;
   try {
-    if (!es) { await rawDelete(); return; }
     await es.delete({ index, id, refresh: true });
   } catch (err) {
-    if (err.meta?.statusCode === 404) return;
-    try {
-      await rawDelete();
-    } catch (rawErr) {
-      if (rawErr.response?.status === 404) return;
+    if (err.meta?.statusCode !== 404) {
       console.error(`❌ ES delete failed [${index}/${id}]:`, err.message);
     }
   }
