@@ -18,7 +18,6 @@
     "warmup": "node src/workers/active-warmup.worker.js",
     "warmup-monitor": "node src/workers/active-warmup-monitor.worker.js",
     "es-sync": "node src/workers/elasticsearch-sync.worker.js",
-    "sync-senders": "node src/scripts/sync-senders.js",
     "lint": "eslint . --max-warnings=0",
     "lint:fix": "eslint . --fix"
   },

@@ -12,37 +12,6 @@ import { senderHealthService } from "../services/sender-health.service.js";
 import { queueMailboxSync } from "../queues/mailbox.queue.js";
 import sequelize from "../config/db.js";
 import { getProxyForEmail } from "../utils/proxy-resolver.js";
-import { INDICES, upsertDocument, deleteDocument, searchSenders } from "../services/elasticsearch.service.js";
-
-
-const syncSenderToES = async (sender, type) => {
-  try {
-    const doc = {
-      id: sender.id,
-      userId: sender.userId,
-      email: sender.email,
-      displayName: sender.displayName,
-      domain: sender.domain,
-      type: type,
-      isVerified: sender.isVerified,
-      warmupEnabled: sender.warmupEnabled,
-      lastInboxSyncAt: sender.lastInboxSyncAt,
-      dailySentCount: sender.dailySentCount,
-      createdAt: sender.createdAt,
-    };
-    await upsertDocument(INDICES.SENDERS, sender.id, doc);
-  } catch (err) {
-    console.error(`[ES-Sync] Failed to sync sender ${sender.id}:`, err.message);
-  }
-};
-
-const deleteSenderFromES = async (senderId) => {
-  try {
-    await deleteDocument(INDICES.SENDERS, senderId);
-  } catch (err) {
-    console.error(`[ES-Sync] Failed to delete sender ${senderId}:`, err.message);
-  }
-};
 
 
 
@@ -143,7 +112,6 @@ export const createSender = asyncHandler(async (req, res) => {
   // Run health check and trigger initial mailbox sync async
   senderHealthService.evaluateSender(sender.id).catch(console.error);
   queueMailboxSync(sender.id, "smtp").catch(console.error);
-  syncSenderToES(sender, "smtp").catch(console.error);
 
   res.status(201).json({
     success: true,
@@ -231,11 +199,6 @@ export const bulkCreateSenders = asyncHandler(async (req, res) => {
     }
   }
 
-  // Sync all successfully created senders to ES
-  for (const instance of results.instances) {
-    syncSenderToES(instance, instance.provider === "gmail" ? "gmail" : instance.provider === "outlook" ? "outlook" : "smtp").catch(console.error);
-  }
-
   res.status(201).json({
     success: true,
     message: `Bulk creation complete. ${results.success} added, ${results.failed} failed.`,
@@ -250,41 +213,66 @@ export const listSenders = asyncHandler(async (req, res) => {
   const userId = req.user.id;
   const { search = "", type = "all", page = 1, limit = 10 } = req.query;
 
-  const pageNum = parseInt(page);
-  const limitNum = parseInt(limit);
-  const from = (pageNum - 1) * limitNum;
+  const typeFilter = type === "all" ? ["smtp", "gmail", "outlook"] : type.split(",");
+  const searchLower = search.toLowerCase().trim();
 
-  // 1. Search via Elasticsearch
-  const { hits: esHits, total } = await searchSenders({
-    userId,
-    query: search,
-    type,
-    from,
-    size: limitNum,
-  });
+  // Conditional fetching based on type filter
+  const promises = [];
+  if (typeFilter.includes("smtp")) {
+    promises.push(SmtpSender.findAll({
+      where: { userId },
+      attributes: { exclude: ["smtpPassword", "imapPassword"] },
+      paranoid: false,
+    }).then(results => results.map(s => ({ ...s.toJSON(), type: "smtp" }))));
+  } else {
+    promises.push(Promise.resolve([]));
+  }
 
-  // 2. Fetch counts (for tabs) - can still use SQL for this or ES facets
-  // For now, let's keep the count mapping SQL logic but restricted to the user
-  const promises = [
-    SmtpSender.count({ where: { userId } }),
-    GmailSender.count({ where: { userId } }),
-    OutlookSender.count({ where: { userId } }),
-  ];
-  const [smtpCount, gmailCount, outlookCount] = await Promise.all(promises);
+  if (typeFilter.includes("gmail")) {
+    promises.push(GmailSender.findAll({
+      where: { userId },
+      attributes: { exclude: ["accessToken", "refreshToken", "googleProfile"] },
+      paranoid: false,
+    }).then(results => results.map(s => ({ ...s.toJSON(), type: "gmail" }))));
+  } else {
+    promises.push(Promise.resolve([]));
+  }
 
-  if (esHits.length === 0) {
+  if (typeFilter.includes("outlook")) {
+    promises.push(OutlookSender.findAll({
+      where: { userId },
+      attributes: { exclude: ["accessToken", "refreshToken"] },
+      paranoid: false,
+    }).then(results => results.map(s => ({ ...s.toJSON(), type: "outlook" }))));
+  } else {
+    promises.push(Promise.resolve([]));
+  }
+
+  const [smtpSenders, gmailSenders, outlookSenders] = await Promise.all(promises);
+
+  let allSenders = [...smtpSenders, ...gmailSenders, ...outlookSenders];
+
+  // Apply Search Filter (In-memory since it spans multiple tables)
+  if (searchLower) {
+    allSenders = allSenders.filter(s => 
+      (s.email && s.email.toLowerCase().includes(searchLower)) ||
+      (s.displayName && s.displayName.toLowerCase().includes(searchLower)) ||
+      (s.domain && s.domain.toLowerCase().includes(searchLower))
+    );
+  }
+
+  const allSenderIds = allSenders.map(s => s.id);
+
+  if (allSenderIds.length === 0) {
     return res.json({
       success: true,
       data: [],
       count: 0,
-      pagination: { total, page: pageNum, limit: limitNum, pages: Math.ceil(total / limitNum) },
-      countsByType: { smtp: smtpCount, gmail: gmailCount, outlook: outlookCount },
+      pagination: { total: 0, page: parseInt(page), limit: parseInt(limit), pages: 0 },
+      countsByType: { smtp: smtpSenders.length, gmail: gmailSenders.length, outlook: outlookSenders.length },
     });
   }
 
-  const allSenderIds = esHits.map(s => s.id);
-
-  // 3. Fetch detailed stats from DB for the current page hits
   const [campaignCounts, leadCounts] = await Promise.all([
     Campaign.findAll({
       attributes: ["senderId", [sequelize.fn("COUNT", sequelize.col("id")), "count"]],
@@ -312,26 +300,34 @@ export const listSenders = asyncHandler(async (req, res) => {
   const leadCountMap = Object.fromEntries(leadCounts.map(l => [l.senderId, parseInt(l.count)]));
 
   // Attach dynamic stats
-  const finalSenders = esHits.map(sender => ({
+  allSenders = allSenders.map(sender => ({
     ...sender,
     campaignCount: campaignCountMap[sender.id] || 0,
     leadCount: leadCountMap[sender.id] || 0,
   }));
 
+  allSenders.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+  const totalCount = allSenders.length;
+  const p = parseInt(page) || 1;
+  const l = parseInt(limit) || 10;
+  const offset = (p - 1) * l;
+  const paginatedSenders = allSenders.slice(offset, offset + l);
+
   res.json({
     success: true,
-    data: finalSenders,
-    count: finalSenders.length,
+    data: paginatedSenders,
+    count: paginatedSenders.length,
     pagination: {
-      total,
-      page: pageNum,
-      limit: limitNum,
-      pages: Math.ceil(total / limitNum),
+      total: totalCount,
+      page: p,
+      limit: l,
+      pages: Math.ceil(totalCount / l),
     },
     countsByType: {
-      smtp: smtpCount,
-      gmail: gmailCount,
-      outlook: outlookCount,
+      smtp: smtpSenders.length,
+      gmail: gmailSenders.length,
+      outlook: outlookSenders.length,
     },
   });
 });
@@ -362,7 +358,6 @@ export const bulkDeleteSenders = asyncHandler(async (req, res) => {
       if (sender) {
         await sender.destroy({ force: true });
         results.success++;
-        deleteSenderFromES(id).catch(console.error);
       } else {
         results.failed++;
         results.errors.push(`Sender ${id} not found`);
@@ -396,7 +391,6 @@ export const deleteSender = asyncHandler(async (req, res) => {
   }
 
   await sender.destroy({ force: true });
-  deleteSenderFromES(senderId).catch(console.error);
 
   res.json({ success: true, message: "Sender deleted successfully" });
 });
@@ -425,21 +419,17 @@ export const testSender = asyncHandler(async (req, res) => {
     try {
       testResult = await testGmailConnection({ accessToken: sender.accessToken, email: sender.email });
       await gmailSender.update({ isVerified: true, lastTestedAt: new Date() });
-      syncSenderToES(gmailSender, "gmail").catch(console.error);
     } catch (err) {
       testResult = { success: false, error: err.message };
       await gmailSender.update({ isVerified: false, verificationError: err.message, lastTestedAt: new Date() });
-      syncSenderToES(gmailSender, "gmail").catch(console.error);
     }
   } else if (outlookSender) {
     try {
       testResult = await testOutlookConnection({ accessToken: sender.accessToken, email: sender.email });
       await outlookSender.update({ isVerified: true, lastTestedAt: new Date() });
-      syncSenderToES(outlookSender, "outlook").catch(console.error);
     } catch (err) {
       testResult = { success: false, error: err.message };
       await outlookSender.update({ isVerified: false, verificationError: err.message, lastTestedAt: new Date() });
-      syncSenderToES(outlookSender, "outlook").catch(console.error);
     }
   } else if (smtpSender) {
     try {
@@ -468,11 +458,9 @@ export const testSender = asyncHandler(async (req, res) => {
 
       testResult = { success: true, smtp: smtpTest, imap: imapTest };
       await smtpSender.update({ isVerified: true, lastTestedAt: new Date(), verificationError: null });
-      syncSenderToES(smtpSender, "smtp").catch(console.error);
     } catch (err) {
       testResult = { success: false, error: err.message };
       await smtpSender.update({ isVerified: false, verificationError: err.message, lastTestedAt: new Date() });
-      syncSenderToES(smtpSender, "smtp").catch(console.error);
     }
   }
 
@@ -524,7 +512,6 @@ export const revokeSenderAccess = asyncHandler(async (req, res) => {
   if (!sender) throw new AppError("OAuth sender not found", 404);
 
   await sender.update({ isVerified: false, accessToken: null, refreshToken: null, expiresAt: null });
-  syncSenderToES(sender, gmailSender ? "gmail" : "outlook").catch(console.error);
 
   res.json({
     success: true,
@@ -552,7 +539,6 @@ export const updateSender = asyncHandler(async (req, res) => {
 
   const type = gmail ? "gmail" : outlook ? "outlook" : "smtp";
   await sender.update(updateData);
-  syncSenderToES(sender, type).catch(console.error);
 
   res.json({
     success: true,
@@ -638,8 +624,6 @@ export const updateWarmupSettings = asyncHandler(async (req, res) => {
   if (replyRate !== undefined) updateData.warmupReplyRate = replyRate;
 
   await sender.update(updateData);
-  const type = gmail ? "gmail" : outlook ? "outlook" : "smtp";
-  syncSenderToES(sender, type).catch(console.error);
 
   res.json({
     success: true,
