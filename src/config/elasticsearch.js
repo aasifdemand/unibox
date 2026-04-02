@@ -14,13 +14,16 @@ export function getElasticsearchClient() {
 
   const options = {
     node: url,
-    requestTimeout: 10000,
-    sniffOnStart: false,                // Don't sniff — avoids product check issues on shared clusters
+    requestTimeout: 20000,
+    sniffOnStart: false,
     sniffOnConnectionFault: false,
+    headers: {
+      "x-elastic-product-origin": "elasticsearch",
+    },
   };
 
   // Optional basic auth — set ELASTICSEARCH_USERNAME + ELASTICSEARCH_PASSWORD in .env
-  const username = process.env.ELASTICSEARCH_USERNAME;
+  const username = process.env.ELASTICSEARCH_USERNAME || "elastic";
   const password = process.env.ELASTICSEARCH_PASSWORD;
   if (username && password) {
     options.auth = { username, password };
