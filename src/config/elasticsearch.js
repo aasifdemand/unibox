@@ -18,13 +18,6 @@ export function getElasticsearchClient() {
   // Basic Auth
   const username = process.env.ELASTICSEARCH_USERNAME || "elastic";
   const password = process.env.ELASTICSEARCH_PASSWORD;
-  
-  if (url && username && password) {
-    // Inject auth directly into URL format: http://user:pass@host:port
-    const protocol = url.split("://")[0];
-    const hostPort = url.split("://")[1];
-    url = `${protocol}://${username}:${encodeURIComponent(password)}@${hostPort}`;
-  }
 
   const options = {
     node: url,
@@ -34,20 +27,24 @@ export function getElasticsearchClient() {
     sniffOnConnectionFault: false,
     agent: false,
     ssl: { rejectUnauthorized: false },
+    // 🛡️ DEFINITIVE COMPATIBILITY HEADERS
     headers: {
       "x-elastic-product-origin": "elasticsearch",
+      "Accept": "application/vnd.elasticsearch+json; compatible-with=7",
+      "Content-Type": "application/json",
     },
+    // Bypass internal product checks for official client v7.14+
+    enableMetaHeader: false,
   };
 
   if (username && password) {
+    options.auth = { username, password };
+    // Brute-force auth header failsafe
+    const authBuffer = Buffer.from(`${username}:${password}`).toString("base64");
+    options.headers["Authorization"] = `Basic ${authBuffer}`;
+    
     const maskedPass = (password || "").substring(0, 2) + "***";
     console.log(`🔑 ES Auth detected: user=${username}, pass=${maskedPass}`);
-  }
-
-  // Optional API key auth (for Elastic Cloud)
-  const apiKey = process.env.ELASTICSEARCH_API_KEY;
-  if (apiKey) {
-    options.auth = { apiKey };
   }
 
   client = new Client(options);
