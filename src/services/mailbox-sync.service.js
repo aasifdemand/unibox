@@ -108,14 +108,35 @@ class MailboxSyncService {
 
     const syncedFolders = [];
     for (const label of labels) {
-      const [folder] = await MailboxFolder.upsert({
-        senderId: sender.id,
-        senderType: 'gmail',
-        providerFolderId: label.id,
-        name: label.name,
-        folderType: this.mapGmailLabelToFolderType(label.id),
-      });
-      syncedFolders.push(folder);
+      try {
+        // Fetch accurate count for each label
+        const detail = await gmail.users.labels.get({
+          userId: "me",
+          id: label.id,
+        });
+
+        const [folder] = await MailboxFolder.upsert({
+          senderId: sender.id,
+          senderType: 'gmail',
+          providerFolderId: label.id,
+          name: label.name,
+          folderType: this.mapGmailLabelToFolderType(label.id),
+          unreadCount: detail.data.messagesUnread || 0,
+          totalCount: detail.data.messagesTotal || 0,
+        });
+        syncedFolders.push(folder);
+      } catch (err) {
+        console.error(`[MailboxSync] Error fetching detail for label ${label.id}:`, err.message);
+        // Fallback to basic upsert
+        const [folder] = await MailboxFolder.upsert({
+          senderId: sender.id,
+          senderType: 'gmail',
+          providerFolderId: label.id,
+          name: label.name,
+          folderType: this.mapGmailLabelToFolderType(label.id),
+        });
+        syncedFolders.push(folder);
+      }
     }
     return syncedFolders;
   }

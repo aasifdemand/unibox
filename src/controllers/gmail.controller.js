@@ -243,10 +243,32 @@ export const getGmailMessages = asyncHandler(async (req, res) => {
       messages.push(...fetchedMessages.filter((m) => m !== null));
     }
 
+    let finalTotalCount = response.data.resultSizeEstimate || 0;
+
+    // FOR ACCURACY: If viewing as a folder, get the real label count instead of estimate
+    if (labelId && !Array.isArray(labelIds)) {
+      try {
+        const localFolder = await MailboxFolder.findOne({
+          where: { senderId: mailboxId, [Op.or]: [{ providerFolderId: labelId }, { folderType: labelId.toLowerCase() }] }
+        });
+        
+        if (localFolder && localFolder.totalCount !== undefined) {
+          finalTotalCount = localFolder.totalCount;
+        } else {
+          // Live fallback to Label detail
+          const detail = await gmail.users.labels.get({ userId: "me", id: labelId });
+          finalTotalCount = detail.data.messagesTotal || finalTotalCount;
+        }
+      } catch (e) {
+        console.error("[getGmailMessages] Failed to fetch accurate count:", e.message);
+      }
+    }
+
     const result = {
       messages,
       nextPageToken: response.data.nextPageToken || null,
       resultSizeEstimate: response.data.resultSizeEstimate || 0,
+      totalCount: finalTotalCount,
       pageToken: pageToken || null,
       maxResults: max,
       hasMore: !!response.data.nextPageToken,
@@ -582,45 +604,27 @@ export const getGmailLabels = asyncHandler(async (req, res) => {
     const labels = await Promise.all(
       response.data.labels.map(async (label) => {
         try {
-          // Get total count
-          const total = await gmail.users.messages.list({
+          // Get the label detail for accurate counts (messagesTotal, messagesUnread)
+          const detail = await gmail.users.labels.get({
             userId: "me",
-            labelIds: [label.id],
-            maxResults: 0,
+            id: label.id,
           });
 
-          // Get unread count
-          const unread = await gmail.users.messages.list({
-            userId: "me",
-            labelIds: [label.id],
-            q: "is:unread",
-            maxResults: 0,
-          });
-
-          // Get count for SENT special handling
-          let sentCount = 0;
-          if (label.id === "SENT") {
-            const sent = await gmail.users.messages.list({
-              userId: "me",
-              labelIds: ["SENT"],
-              maxResults: 0,
-            });
-            sentCount = sent.data.resultSizeEstimate || 0;
-          }
+          const labelData = detail.data;
 
           return {
-            id: label.id,
-            name: label.name,
-            type: label.type,
-            messageListVisibility: label.messageListVisibility,
-            labelListVisibility: label.labelListVisibility,
-            folderType: mapGmailLabelToFolder(label.id, label.name),
-            totalCount: total.data.resultSizeEstimate || 0,
-            unreadCount: unread.data.resultSizeEstimate || 0,
-            sentCount: sentCount,
+            id: labelData.id,
+            name: labelData.name,
+            type: labelData.type,
+            messageListVisibility: labelData.messageListVisibility,
+            labelListVisibility: labelData.labelListVisibility,
+            folderType: mapGmailLabelToFolder(labelData.id, labelData.name),
+            totalCount: labelData.messagesTotal || 0,
+            unreadCount: labelData.messagesUnread || 0,
+            sentCount: (labelData.id === "SENT") ? labelData.messagesTotal : 0,
           };
         } catch (error) {
-          console.log("error: ", error);
+          console.error(`Failed to fetch detail for label ${label.id}:`, error.message);
 
           return {
             id: label.id,
@@ -629,6 +633,7 @@ export const getGmailLabels = asyncHandler(async (req, res) => {
             folderType: mapGmailLabelToFolder(label.id, label.name),
             totalCount: 0,
             unreadCount: 0,
+            sentCount: 0,
           };
         }
       }),
