@@ -9,6 +9,7 @@ export const INDICES = {
   CONTACTS:  "unibox_contacts",
   LEADS:     "unibox_leads",
   CAMPAIGNS: "unibox_campaigns",
+  SENDERS:   "unibox_senders",
 };
 
 // ─── Mappings ─────────────────────────────────────────────────────────────────
@@ -117,6 +118,25 @@ const CAMPAIGN_MAPPING = {
   },
 };
 
+const SENDER_MAPPING = {
+  settings: SETTINGS,
+  mappings: {
+    properties: {
+      id:               { type: "keyword" },
+      userId:           { type: "keyword" },
+      email:            { type: "text", analyzer: "english", fields: { keyword: { type: "keyword" } } },
+      displayName:       { type: "text", analyzer: "english", fields: { keyword: { type: "keyword" } } },
+      domain:           { type: "keyword" },
+      type:             { type: "keyword" }, // gmail, outlook, smtp
+      isVerified:       { type: "boolean" },
+      warmupEnabled:    { type: "boolean" },
+      lastInboxSyncAt:  { type: "date" },
+      dailySentCount:   { type: "integer" },
+      createdAt:        { type: "date" },
+    },
+  },
+};
+
 // ─── Ensure Indices Exist ─────────────────────────────────────────────────────
 
 export async function initIndices() {
@@ -129,6 +149,7 @@ export async function initIndices() {
     { name: INDICES.CONTACTS,  body: CONTACT_MAPPING  },
     { name: INDICES.LEADS,     body: LEAD_MAPPING     },
     { name: INDICES.CAMPAIGNS, body: CAMPAIGN_MAPPING },
+    { name: INDICES.SENDERS,   body: SENDER_MAPPING   },
   ];
 
   try {
@@ -297,6 +318,34 @@ export async function searchCampaigns({ userId, query, status, from = 0, size = 
     return { hits: result.hits.hits.map((h) => h._source), total: result.hits.total.value };
   } catch (err) {
     console.error("❌ ES search failed [campaigns]:", err.message);
+    return { hits: [], total: 0 };
+  }
+}
+
+// ─── Search Senders ───────────────────────────────────────────────────────────
+
+export async function searchSenders({ userId, query, type, isVerified, from = 0, size = 20 } = {}) {
+  const es = getElasticsearchClient();
+  if (!es) return { hits: [], total: 0 };
+
+  const must = [{ term: { userId } }];
+  if (query) must.push({ multi_match: { query, fields: ["email^3", "displayName^2", "domain"], fuzziness: "AUTO", type: "best_fields" } });
+
+  const filter = [];
+  if (type && type !== 'all') {
+    const types = Array.isArray(type) ? type : type.split(",");
+    filter.push({ terms: { type: types } });
+  }
+  if (isVerified !== undefined) filter.push({ term: { isVerified } });
+
+  try {
+    const { body: result } = await es.search({
+      index: INDICES.SENDERS, from, size,
+      body: { query: { bool: { must, filter } }, sort: [{ createdAt: { order: "desc" } }] },
+    });
+    return { hits: result.hits.hits.map((h) => h._source), total: result.hits.total.value };
+  } catch (err) {
+    console.error("❌ ES search failed [senders]:", err.message);
     return { hits: [], total: 0 };
   }
 }
