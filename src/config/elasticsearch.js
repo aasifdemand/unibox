@@ -14,9 +14,12 @@ export function getElasticsearchClient() {
 
   const options = {
     node: url,
-    requestTimeout: 20000,
+    requestTimeout: 60000,
     sniffOnStart: false,
     sniffOnConnectionFault: false,
+    ssl: {
+      rejectUnauthorized: false,
+    },
     headers: {
       "x-elastic-product-origin": "elasticsearch",
     },
@@ -27,6 +30,9 @@ export function getElasticsearchClient() {
   const password = process.env.ELASTICSEARCH_PASSWORD;
   if (username && password) {
     options.auth = { username, password };
+    // Manual Authorization header failsafe
+    const authBuffer = Buffer.from(`${username}:${password}`).toString("base64");
+    options.headers["Authorization"] = `Basic ${authBuffer}`;
   }
 
   // Optional API key auth (for Elastic Cloud)
