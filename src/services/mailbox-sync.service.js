@@ -51,6 +51,8 @@ class MailboxSyncService {
           }
         }
       }
+      // 3. Update Sender Sync Timestamp
+      await sender.update({ lastInboxSyncAt: new Date() });
 
       console.log(`[MailboxSync] Sync completed for ${senderType}:${senderId}`);
       
