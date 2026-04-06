@@ -998,6 +998,110 @@ export const exportBatch = asyncHandler(async (req, res) => {
   res.send(content);
 });
 
+// Export all contacts matching filter across all batches for the user
+export const exportAllUserContacts = asyncHandler(async (req, res) => {
+  const format = req.query.format || "csv";
+  const searchTerm = req.query.searchTerm || "";
+  const filterStatus = req.query.filterStatus || "all";
+
+  // Build where clause for filtering records
+  const recordWhere = {
+    normalizedEmail: { [Op.ne]: null },
+  };
+
+  if (searchTerm) {
+    recordWhere[Op.or] = [
+      { normalizedEmail: { [Op.iLike]: `%${searchTerm}%` } },
+      { name: { [Op.iLike]: `%${searchTerm}%` } },
+    ];
+  }
+
+  // Build where clause for global registry if filtering by status
+  const registryWhere = {};
+  if (filterStatus && filterStatus !== "all") {
+    const statuses = filterStatus.split(',').map(s => s.trim()).filter(Boolean);
+    if (statuses.length > 0) {
+      registryWhere.verificationStatus = { [Op.in]: statuses };
+    }
+  }
+
+  // Find all batches belonging to this user
+  const userBatches = await ListUploadBatch.findAll({
+    where: { userId: req.user.id },
+    attributes: ["id", "originalFilename"],
+  });
+
+  const batchIds = userBatches.map(b => b.id);
+
+  if (batchIds.length === 0) {
+    return res.status(404).json({ success: false, message: "No contacts to export" });
+  }
+
+  recordWhere.batchId = { [Op.in]: batchIds };
+
+  // Query records (no limit/offset for export)
+  const records = await ListUploadRecord.findAll({
+    where: recordWhere,
+    include: [
+      {
+        model: GlobalEmailRegistry,
+        where: Object.keys(registryWhere).length > 0 ? registryWhere : undefined,
+        required: Object.keys(registryWhere).length > 0,
+        attributes: ["verificationStatus", "verifiedAt", "verificationMeta"],
+      },
+    ],
+    attributes: [
+      "normalizedEmail",
+      "name",
+      "status",
+      "metadata",
+      "createdAt",
+    ],
+    order: [["createdAt", "DESC"]],
+  });
+
+  // Transform data for export
+  const exportData = records.map(r => {
+    const main = {
+      email: r.normalizedEmail,
+      name: r.name,
+      status: r.status,
+      verificationStatus: r.GlobalEmailRegistry?.verificationStatus || 'unverified',
+      createdAt: r.createdAt
+    };
+    // Flatten metadata
+    const meta = r.metadata || {};
+    return { ...main, ...meta };
+  });
+
+  // Convert to requested format
+  let content, contentType, extension;
+
+  switch (format.toLowerCase()) {
+    case "csv":
+      content = convertToCSV(exportData);
+      contentType = "text/csv";
+      extension = "csv";
+      break;
+    case "json":
+      content = JSON.stringify(exportData, null, 2);
+      contentType = "application/json";
+      extension = "json";
+      break;
+    case "xlsx":
+      content = convertToXLSX(exportData);
+      contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+      extension = "xlsx";
+      break;
+    default:
+      return res.status(400).json({ success: false, message: "Unsupported format" });
+  }
+
+  res.setHeader("Content-Type", contentType);
+  res.setHeader("Content-Disposition", `attachment; filename=audience-export-${new Date().toISOString().split('T')[0]}.${extension}`);
+  res.send(content);
+});
+
 // Get all contacts across all batches for the user
 export const getAllUserContacts = asyncHandler(async (req, res) => {
   const page = parseInt(req.query.page) || 1;

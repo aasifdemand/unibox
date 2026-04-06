@@ -223,6 +223,32 @@ const SmtpSender = sequelize.define(
       defaultValue: 0,
     },
 
+    warmupInitialLimit: {
+      type: DataTypes.INTEGER,
+      defaultValue: 2,
+    },
+
+    warmupIncrementBy: {
+      type: DataTypes.INTEGER,
+      defaultValue: 2,
+    },
+
+    warmupMaxLimit: {
+      type: DataTypes.INTEGER,
+      defaultValue: 50,
+    },
+
+    isSystemAccount: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+    },
+
+    warmupLastResetDate: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      comment: "Last date (YYYY-MM-DD) the daily count was reset in user timezone",
+    },
+
     /* =========================
        CONFIGURATION & REFRESH
     ========================= */

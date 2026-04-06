@@ -1,11 +1,8 @@
-import "../models/index.js";
-import { initGlobalErrorHandlers } from "../utils/error-handler.js";
-initGlobalErrorHandlers();
-import { SmtpSender, GmailSender, OutlookSender } from "../models/index.js";
+import { DateTime } from "luxon";
+import { SmtpSender, GmailSender, OutlookSender, User } from "../models/index.js";
 import { activeWarmupService } from "../services/active-warmup.service.js";
 
-
-const log = (level, message, meta = {}) =>
+export const log = (level, message, meta = {}) =>
   console.log(
     JSON.stringify({
       ts: new Date().toISOString(),
@@ -18,66 +15,107 @@ const log = (level, message, meta = {}) =>
 
 /**
  * The Warmup Worker runs periodically (e.g. every 10-15 minutes).
- * It selects a few mailboxes that have warmup enabled and triggers a send.
+ * It handles both:
+ * 1. Dawn Transition: Resetting counts and incrementing limits at local midnight.
+ * 2. Warmup Sends: Triggering emails based on daily limits and pacing.
  */
-async function runWarmupTick() {
+export async function runWarmupTick(options = {}) {
   try {
-    log("INFO", "⏰ Warmup tick started");
+    log("INFO", "⏰ Warmup tick started", { forceAll: !!options.forceAll });
 
-    // 1. Fetch enabled senders across all types
+    // 1. Fetch enabled senders with User timezone info
+    const queryOptions = {
+      where: { warmupEnabled: true, warmupStatus: "active", isVerified: true },
+      include: [{ model: User, attributes: ["timezone"] }]
+    };
+
     const [smtps, gmails, outlooks] = await Promise.all([
-      SmtpSender.findAll({ where: { warmupEnabled: true, warmupStatus: "active", isVerified: true } }),
-      GmailSender.findAll({ where: { warmupEnabled: true, warmupStatus: "active", isVerified: true } }),
-      OutlookSender.findAll({ where: { warmupEnabled: true, warmupStatus: "active", isVerified: true } }),
+      SmtpSender.findAll(queryOptions),
+      GmailSender.findAll(queryOptions),
+      OutlookSender.findAll(queryOptions),
     ]);
 
     const allSenders = [
-      ...smtps.map(s => ({ ...s.get(), type: 'smtp', model: s })),
-      ...gmails.map(s => ({ ...s.get(), type: 'gmail', model: s })),
-      ...outlooks.map(s => ({ ...s.get(), type: 'outlook', model: s })),
+      ...smtps.map(s => ({ ...s.get(), type: 'smtp', model: s, user: s.User })),
+      ...gmails.map(s => ({ ...s.get(), type: 'gmail', model: s, user: s.User })),
+      ...outlooks.map(s => ({ ...s.get(), type: 'outlook', model: s, user: s.User })),
     ];
 
-    // 2. Filter by daily limit and human-like hour pacing
+    if (allSenders.length === 0) {
+      log("INFO", "📭 No eligible senders found for warmup");
+      return;
+    }
+
     for (const sender of allSenders) {
-      if (sender.warmupCurrentSent >= sender.warmupDailyLimit) continue;
+      const timezone = sender.user?.timezone || "UTC";
+      const today = DateTime.now().setZone(timezone).toFormat("yyyy-MM-dd");
+
+      // A. DAWN TRANSITION: Has the local day changed since the last reset?
+      if (sender.warmupLastResetDate !== today) {
+        log("INFO", `🌅 Dawn transition for ${sender.email} (${timezone})`);
+        
+        const nextDaysActive = (sender.warmupDaysActive || 0) + 1;
+        const nextLimit = Math.min(
+          sender.warmupMaxLimit || 50,
+          (sender.warmupInitialLimit || 2) + (nextDaysActive * (sender.warmupIncrementBy || 2)),
+        );
+
+        await sender.model.update({
+          warmupCurrentSent: 0,
+          warmupDaysActive: nextDaysActive,
+          warmupDailyLimit: nextLimit,
+          warmupLastResetDate: today
+        });
+        
+        // Update local object to reflect reset
+        sender.warmupCurrentSent = 0;
+        sender.warmupDailyLimit = nextLimit;
+      }
+
+      // B. QUIET HOURS: Only send during 8 AM - 8 PM in user's timezone
+      const currentHour = DateTime.now().setZone(timezone).hour;
+      if (currentHour < 8 || currentHour >= 20) {
+        log("DEBUG", `🛌 Quiet hours for ${sender.email} (${timezone}, hour: ${currentHour})`);
+        continue;
+      }
+
+      // C. WARMUP SEND: Trigger based on daily limit and probability
+      if (sender.warmupCurrentSent >= sender.warmupDailyLimit) {
+        log("DEBUG", `⏭️ Limit reached for ${sender.email} (${sender.warmupCurrentSent}/${sender.warmupDailyLimit})`);
+        continue;
+      }
 
       // Human Randomness: 20% chance to send an email in this specific 10m window
-      if (Math.random() < 0.2) {
+      // Bypass if 'forceAll' is provided (for testing)
+      if (options.forceAll || Math.random() < 0.2) {
         await activeWarmupService.triggerWarmupSend(sender);
 
         // Update the instance
         await sender.model.increment("warmupCurrentSent");
-        log("DEBUG", "🚀 Triggered Warmup Send", { email: sender.email, type: sender.type });
+        log("INFO", "🚀 Triggered Warmup Send", { email: sender.email, type: sender.type });
       }
     }
 
     log("INFO", "✅ Warmup tick completed");
   } catch (err) {
-    log("ERROR", "❌ Warmup tick failed", { error: err.message });
+    log("ERROR", "❌ Warmup tick failed", { error: err.message, stack: err.stack });
   }
 }
 
 // Start the ticker every 10 minutes
 const TICK_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
-log("INFO", "🚀 Warmup Orchestrator Worker started");
 
-// Initial run
-runWarmupTick();
+// Detect if this file is being run directly as a script
+import { fileURLToPath } from "url";
+const isMain = process.argv[1] && fileURLToPath(import.meta.url) === (process.argv[1].startsWith('file:') ? fileURLToPath(process.argv[1]) : process.argv[1]);
 
-// Periodic runs
-setInterval(runWarmupTick, TICK_INTERVAL_MS);
+if (isMain) {
+  log("INFO", "🚀 Warmup Orchestrator Worker started (Timezone-Aware Mode)");
 
-/**
- * Daily Reset: At midnight UTC, reset warmupCurrentSent to 0
- */
-setInterval(async () => {
-  const now = new Date();
-  if (now.getUTCHours() === 0 && now.getUTCMinutes() < 10) {
-    log("INFO", "🔄 Resetting daily warmup counts");
-    await Promise.all([
-      SmtpSender.update({ warmupCurrentSent: 0 }, { where: {} }),
-      GmailSender.update({ warmupCurrentSent: 0 }, { where: {} }),
-      OutlookSender.update({ warmupCurrentSent: 0 }, { where: {} }),
-    ]);
-  }
-}, 600_000); // Check every 10 mins if it's midnight
+  // Initial run
+  runWarmupTick();
+
+  // Periodic runs
+  setInterval(runWarmupTick, TICK_INTERVAL_MS);
+}
+

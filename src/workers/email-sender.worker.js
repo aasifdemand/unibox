@@ -203,7 +203,8 @@ function classifyBounce(error) {
 ========================= */
 
 function generateMessageId(emailId, domain) {
-  return `<${emailId}.${randomUUID().slice(0, 8)}.${Date.now()}@${domain}>`;
+  const prefix = emailId || `warmup-${randomUUID().slice(0, 8)}`;
+  return `<${prefix}.${randomUUID().slice(0, 8)}.${Date.now()}@${domain}>`;
 }
 
 /* =========================
@@ -224,43 +225,70 @@ async function startWorker() {
 
       let emailRecord;
       let sender;
+      let isWarmup = false;
+      let emailId;
 
       try {
+        const payload = JSON.parse(msg.content.toString());
+        log("DEBUG", "📥 RabbitMQ Message Received", { ...payload });
+        
         const {
-          emailId,
           senderType,
           policy = {},
-        } = JSON.parse(msg.content.toString());
+          recipientEmail: warmupRecipient,
+          subject: warmupSubject,
+          htmlBody: warmupBody,
+          // Extract both senderId and payload.sender as source for lookup
+          senderId: pSenderId,
+          sender: pSender,
+        } = payload;
+        
+        emailId = payload.emailId;
+        isWarmup = payload.isWarmup || false;
 
-        // Resolve proxy server-side only
-        const proxy = await getProxyForEmail(sender?.email);
-        if (proxy) log("DEBUG", "🌐 Using SOCKS5 proxy for this send", { emailId });
+        // 1. & 3. Resolve the Sender (Unifying Warmup and Regular)
+        const finalSenderType = senderType || payload.type || "smtp";
+        const finalSenderId = pSenderId || pSender || (payload.emailId ? (await Email.findByPk(payload.emailId))?.senderId : null);
 
-        emailRecord = await Email.findByPk(emailId);
-
-        if (!emailRecord || emailRecord.status !== "routed") {
-          return channel.ack(msg);
+        if (!finalSenderId) {
+          throw new Error("No sender ID found in payload");
         }
+
+        if (finalSenderType === "gmail") sender = await GmailSender.findByPk(finalSenderId);
+        else if (finalSenderType === "outlook") sender = await OutlookSender.findByPk(finalSenderId);
+        else sender = await SmtpSender.findByPk(finalSenderId);
+
+        if (!sender || !sender.isVerified) {
+           log("ERROR", "Sender not found or not verified", { 
+             senderId: finalSenderId, 
+             senderType: finalSenderType,
+             isWarmup 
+           });
+           throw new Error(`Sender [${finalSenderType}] with ID [${finalSenderId}] is unverified or missing`);
+        }
+
+        // 3. Load Email Record (if not warmup)
+        if (!isWarmup && payload.emailId) {
+          emailRecord = await Email.findByPk(payload.emailId);
+          if (!emailRecord || emailRecord.status !== "routed") {
+            return channel.ack(msg);
+          }
+        }
+
+        const finalRecipient = isWarmup ? warmupRecipient : emailRecord.recipientEmail;
+        const finalSubject = isWarmup ? warmupSubject : emailRecord.subject;
+        const finalBody = isWarmup ? warmupBody : emailRecord.htmlBody;
+
+        // 2. Resolve Proxy
+        const proxy = await getProxyForEmail(sender.email);
+        if (proxy) log("DEBUG", "🌐 Using SOCKS5 proxy for this send", { emailId, isWarmup });
 
         log("DEBUG", "🚀 Processing email for delivery", {
           emailId,
-          recipient: emailRecord.recipientEmail,
-          senderType,
+          recipient: finalRecipient,
+          senderType: finalSenderType,
+          isWarmup,
         });
-
-        /* =========================
-           LOAD SENDER
-        ========================= */
-
-        if (senderType === "smtp")
-          sender = await SmtpSender.findByPk(emailRecord.senderId);
-        if (senderType === "gmail")
-          sender = await GmailSender.findByPk(emailRecord.senderId);
-        if (senderType === "outlook")
-          sender = await OutlookSender.findByPk(emailRecord.senderId);
-
-        if (!sender || !sender.isVerified)
-          throw new Error("Sender not verified");
 
         /* =========================
            REPUTATION BLOCK
@@ -341,9 +369,9 @@ async function startWorker() {
           try {
             const mailOptions = {
               from: `"${sender.displayName}" <${sender.email}>`,
-              to: emailRecord.recipientEmail,
-              subject: emailRecord.subject,
-              html: emailRecord.htmlBody,
+              to: finalRecipient,
+              subject: finalSubject,
+              html: finalBody,
               messageId,
             };
 
@@ -398,15 +426,17 @@ async function startWorker() {
 
         if (senderType === "gmail") {
           const token = await refreshGoogleToken(sender);
+          if (!token) throw new Error("Failed to refresh Google token");
 
           let rawHeaders =
             `From: ${sender.email}\r\n` +
-            `To: ${emailRecord.recipientEmail}\r\n` +
-            `Subject: ${emailRecord.subject}\r\n`;
+            `To: ${finalRecipient}\r\n` +
+            `Subject: ${finalSubject}\r\n`;
 
           if (
-            emailRecord.htmlBody &&
-            emailRecord.htmlBody.includes("/tracking/unsubscribe/")
+            !isWarmup &&
+            finalBody &&
+            finalBody.includes("/tracking/unsubscribe/")
           ) {
             const appUrl =
               process.env.APP_URL ||
@@ -421,7 +451,7 @@ async function startWorker() {
           const raw =
             rawHeaders +
             "Content-Type: text/html; charset=UTF-8\r\n\r\n" +
-            emailRecord.htmlBody;
+            finalBody;
 
           const encoded = Buffer.from(raw)
             .toString("base64")
@@ -453,37 +483,49 @@ async function startWorker() {
 
         if (senderType === "outlook") {
           const token = await getValidMicrosoftToken(sender);
+          if (!token) throw new Error("Failed to refresh Outlook token");
 
           // 1. Create the message (not sendMail) so we get IDs back
           const messagePayload = {
-            subject: emailRecord.subject,
-            body: { contentType: "HTML", content: emailRecord.htmlBody },
+            subject: finalSubject,
+            body: { contentType: "HTML", content: finalBody },
             toRecipients: [
-              { emailAddress: { address: emailRecord.recipientEmail } },
+              { emailAddress: { address: finalRecipient } },
             ],
           };
 
           // 🚀 Microsoft Graph API requires custom headers to start with 'x-' or 'X-'
-          messagePayload.internetMessageHeaders = [
-            { name: "X-Unibox-Email-Id", value: emailId },
-          ];
+          const headers = [];
+
+          if (emailId) {
+            headers.push({
+              name: "X-Unibox-Email-Id",
+              value: emailId,
+            });
+          }
 
           if (
-            emailRecord.htmlBody &&
-            emailRecord.htmlBody.includes("/tracking/unsubscribe/")
+            !isWarmup &&
+            finalBody &&
+            finalBody.includes("/tracking/unsubscribe/")
           ) {
             const appUrl =
               process.env.APP_URL ||
               process.env.VITE_API_URL ||
               "http://localhost:8080";
             const unsubUrl = `${appUrl}/api/v1/tracking/unsubscribe/${emailId}`;
-            messagePayload.internetMessageHeaders.push(
+            headers.push(
               { name: "X-List-Unsubscribe", value: `<${unsubUrl}>` },
               {
                 name: "X-List-Unsubscribe-Post",
                 value: "List-Unsubscribe=One-Click",
               },
             );
+          }
+
+          // ONLY add the property if there are actually headers to send
+          if (headers.length > 0) {
+            messagePayload.internetMessageHeaders = headers;
           }
 
           const axiosConfig = { headers: { Authorization: `Bearer ${token}` } };
@@ -514,65 +556,82 @@ async function startWorker() {
            SUCCESS UPDATE
         ========================= */
 
-        await emailRecord.update({
-          status: "sent",
-          sentAt: new Date(),
-          providerMessageId,
-          providerThreadId,
-          providerConversationId,
-        });
+        if (!isWarmup) {
+          await emailRecord.update({
+            status: "sent",
+            sentAt: new Date(),
+            providerMessageId,
+            providerThreadId,
+            providerConversationId,
+          });
 
-        await EmailEvent.create({
-          emailId,
-          eventType: "sent",
-          eventTimestamp: new Date(),
-        });
+          await EmailEvent.create({
+            emailId,
+            eventType: "sent",
+            eventTimestamp: new Date(),
+          });
 
-        // 📊 UPDATE CAMPAIGN STATS
-        if (emailRecord.campaignId) {
-          const statsUpdates = [
-            CampaignSend.update(
-              {
-                status: "sent",
-                sentAt: new Date(),
-              },
-              { where: { emailId: emailRecord.id } },
-            ),
-          ];
+          // 📊 UPDATE CAMPAIGN STATS
+          if (emailRecord.campaignId) {
+            const statsUpdates = [
+              CampaignSend.update(
+                {
+                  status: "sent",
+                  sentAt: new Date(),
+                },
+                { where: { emailId: emailRecord.id } },
+              ),
+            ];
 
-          // Only increment totalSent for Step 0 (the initial outreach)
-          // This ensures totalSent represents unique recipients reached.
-          if (emailRecord.metadata?.step === 0) {
-            statsUpdates.push(
-              Campaign.increment("totalSent", {
-                where: { id: emailRecord.campaignId },
-              })
-            );
+            // Only increment totalSent for Step 0 (the initial outreach)
+            if (emailRecord.metadata?.step === 0) {
+              statsUpdates.push(
+                Campaign.increment("totalSent", {
+                  where: { id: emailRecord.campaignId },
+                })
+              );
+            }
+
+            await Promise.all(statsUpdates);
           }
-
-          await Promise.all(statsUpdates);
         }
 
         log("INFO", "✅ Email sent successfully", {
           emailId,
-          recipient: emailRecord.recipientEmail,
+          recipient: finalRecipient,
           providerMessageId,
           domain,
+          isWarmup
         });
 
         // 🏛️ SYNC LEAD TO CRM
-        // Internal
-        syncLead(emailRecord.userId, emailRecord.recipientEmail, "sent").catch(e =>
-          log("ERROR", "Failed to sync lead to CRM", { error: e.message })
-        );
-        // External
-        syncLeadToAllCRMs(emailRecord.userId, emailRecord.recipientEmail, "sent").catch(e =>
-          log("ERROR", "Failed to sync lead to external CRM", { error: e.message })
-        );
+        if (!isWarmup) {
+          // Internal
+          syncLead(emailRecord.userId, emailRecord.recipientEmail, "sent").catch(e =>
+            log("ERROR", "Failed to sync lead to CRM", { error: e.message })
+          );
+          // External
+          syncLeadToAllCRMs(emailRecord.userId, emailRecord.recipientEmail, "sent").catch(e =>
+            log("ERROR", "Failed to sync lead to external CRM", { error: e.message })
+          );
+        }
 
         channel.ack(msg);
       } catch (err) {
-        log("ERROR", "Send failed", { error: err.message, stack: err.stack });
+        let errorMetadata = { 
+          error: err.message, 
+          stack: err.stack,
+          emailId,
+          isWarmup
+        };
+
+        // Capture Axios 400 error details (payload mismatch)
+        if (err.response?.status === 400) {
+          errorMetadata.responseBody = err.response.data;
+          errorMetadata.requestData = err.config?.data;
+        }
+
+        log("ERROR", "Send failed", errorMetadata);
 
         const isProxyError =
           err.code === "ECONNREFUSED" ||
@@ -585,7 +644,7 @@ async function startWorker() {
           await deleteProxySticky(sender?.email);
         }
 
-        if (emailRecord) {
+        if (!isWarmup && emailRecord) {
           await emailRecord.update({
             status: "failed",
             lastError: err.message,

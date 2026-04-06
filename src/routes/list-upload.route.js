@@ -10,6 +10,7 @@ import {
   uploadList,
   getAllUserContacts,
   enrichContact,
+  exportAllUserContacts,
 } from "../controllers/list-upload.controller.js";
 import { protect } from "../middlewares/auth.middleware.js";
 
@@ -119,6 +120,7 @@ router.get("/batches", protect, getUserBatches);
  *       - cookieAuth: []
  */
 router.get("/contacts", protect, getAllUserContacts);
+router.get("/contacts/export", protect, exportAllUserContacts);
 
 router.delete("/batch/:batchId", protect, deleteBatch);
 router.delete("/contact/:recordId", protect, deleteContact);

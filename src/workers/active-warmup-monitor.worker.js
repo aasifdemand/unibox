@@ -1,4 +1,3 @@
-import "../models/index.js";
 import { initGlobalErrorHandlers } from "../utils/error-handler.js";
 initGlobalErrorHandlers();
 
@@ -6,7 +5,8 @@ import {
   SmtpSender, 
   GmailSender, 
   OutlookSender, 
-  WarmupMessage 
+  WarmupMessage,
+  SenderHealth
 } from "../models/index.js";
 import { activeWarmupService } from "../services/active-warmup.service.js";
 import { google } from "googleapis";
@@ -16,6 +16,7 @@ import { getValidMicrosoftToken } from "../utils/get-valid-microsoft-token.js";
 import { createImapConnection } from "../utils/imap-helper.js";
 import { simpleParser } from "mailparser";
 import { Op } from "sequelize";
+import sequelize from "../config/db.js";
 import { getRabbitChannel as getChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
 
@@ -45,9 +46,9 @@ async function runMonitorTick() {
     ]);
 
     const allSenders = [
-      ...gmails.map(s => ({ ...s.get(), type: 'gmail' })),
-      ...outlooks.map(s => ({ ...s.get(), type: 'outlook' })),
-      ...smtps.map(s => ({ ...s.get(), type: 'smtp' })),
+      ...gmails.map(s => { s.type = 'gmail'; return s; }),
+      ...outlooks.map(s => { s.type = 'outlook'; return s; }),
+      ...smtps.map(s => { s.type = 'smtp'; return s; }),
     ];
 
     for (const sender of allSenders) {
@@ -76,12 +77,35 @@ async function processMailboxMonitor(mailbox) {
     if (recentWarmups.length === 0) return;
 
     // 2. Scan folders (Provider Specific)
-    if (mailbox.type === 'gmail') await monitorGmail(mailbox, recentWarmups);
-    else if (mailbox.type === 'outlook') await monitorOutlook(mailbox, recentWarmups);
-    else if (mailbox.type === 'smtp') await monitorImap(mailbox, recentWarmups);
+    let stats = { totalFound: 0, spamCount: 0 };
+    if (mailbox.type === 'gmail') stats = await monitorGmail(mailbox, recentWarmups);
+    else if (mailbox.type === 'outlook') stats = await monitorOutlook(mailbox, recentWarmups);
+    else if (mailbox.type === 'smtp') stats = await monitorImap(mailbox, recentWarmups);
+
+    // 3. Update Sender Health
+    if (stats.totalFound > 0) {
+      const spamRate = (stats.spamCount / stats.totalFound) * 100;
+      
+      const health = await SenderHealth.findOne({ where: { mailboxId: mailbox.id } });
+      if (!health) {
+        await SenderHealth.create({ 
+          mailboxId: mailbox.id,
+          reputationScore: 100, // Initial
+          healthStatus: 'healthy'
+        });
+      }
+
+      await SenderHealth.update({
+        warmupSpamRate: spamRate,
+        warmupTotalRescued: sequelize.literal(`"warmupTotalRescued" + ${stats.spamCount}`),
+        lastCheckedAt: new Date()
+      }, { where: { mailboxId: mailbox.id } });
+
+      log("INFO", `Updated health for ${mailbox.email}`, { spamRate: spamRate.toFixed(2), rescued: stats.spamCount });
+    }
 
   } catch (err) {
-    log("ERROR", `Monitor failed for ${mailbox.email}`, { error: err.message });
+    log("ERROR", `Monitor failed for ${mailbox.email}`, { error: err.message, stack: err.stack });
   }
 }
 
@@ -90,6 +114,8 @@ async function processMailboxMonitor(mailbox) {
 ========================= */
 async function monitorGmail(mailbox, recentWarmups) {
   const token = await refreshGoogleToken(mailbox);
+  if (!token) throw new Error("Could not refresh Google token");
+
   const oauth2 = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_CALLBACK_URL_SENDER);
   oauth2.setCredentials({ access_token: token.accessToken });
   const gmail = google.gmail({ version: "v1", auth: oauth2 });
@@ -99,6 +125,7 @@ async function monitorGmail(mailbox, recentWarmups) {
   const query = `(${peerEmails.map(e => `from:${e}`).join(" OR ")}) newer_than:2d`;
 
   const res = await gmail.users.messages.list({ userId: "me", q: query });
+  let stats = { totalFound: 0, spamCount: 0 };
   
   for (const msg of res.data.messages || []) {
     const full = await gmail.users.messages.get({ userId: "me", id: msg.id, format: "metadata", metadataHeaders: ["From", "Subject"] });
@@ -109,8 +136,11 @@ async function monitorGmail(mailbox, recentWarmups) {
     const match = recentWarmups.find(w => from.includes(w.senderEmail) && subject === w.subject);
     if (!match) continue;
 
+    stats.totalFound++;
+
     // ACTION: Rescue from Spam
     if (full.data.labelIds.includes("SPAM")) {
+      stats.spamCount++;
       await activeWarmupService.moveToInbox(mailbox, "gmail", msg.id);
       log("INFO", "Rescued Gmail from Spam", { email: mailbox.email, match: match.senderEmail });
     }
@@ -123,6 +153,7 @@ async function monitorGmail(mailbox, recentWarmups) {
     // ACTION: Reply?
     await handleMaybeReply(mailbox, "gmail", msg.id, match);
   }
+  return stats;
 }
 
 /* =========================
@@ -130,10 +161,14 @@ async function monitorGmail(mailbox, recentWarmups) {
 ========================= */
 async function monitorOutlook(mailbox, recentWarmups) {
   const token = await getValidMicrosoftToken(mailbox);
+  if (!token) throw new Error("Could not refresh Outlook token");
+
   const headers = { Authorization: `Bearer ${token}` };
 
   // Search inbox and junk
   const folders = ["inbox", "junkemail"];
+  let stats = { totalFound: 0, spamCount: 0 };
+
   for (const folder of folders) {
     const res = await axios.get(`https://graph.microsoft.com/v1.0/me/mailFolders/${folder}/messages?$top=20`, { headers });
     
@@ -142,7 +177,10 @@ async function monitorOutlook(mailbox, recentWarmups) {
       const match = recentWarmups.find(w => from?.toLowerCase() === w.senderEmail.toLowerCase() && msg.subject === w.subject);
       if (!match) continue;
 
+      stats.totalFound++;
+
       if (folder === "junkemail") {
+        stats.spamCount++;
         await activeWarmupService.moveToInbox(mailbox, "outlook", msg.id);
         log("INFO", "Rescued Outlook from Spam", { email: mailbox.email, match: match.senderEmail });
       }
@@ -154,6 +192,7 @@ async function monitorOutlook(mailbox, recentWarmups) {
       await handleMaybeReply(mailbox, "outlook", msg.id, match);
     }
   }
+  return stats;
 }
 
 /* =========================
@@ -166,11 +205,12 @@ async function monitorImap(mailbox, recentWarmups) {
     imap.once("ready", () => {
       // Check INBOX and typical Spam folders
       const scanFolders = ["INBOX", "Spam", "Junk"];
+      let stats = { totalFound: 0, spamCount: 0 };
       
       const doScan = async (idx) => {
         if (idx >= scanFolders.length) {
           imap.end();
-          return resolve();
+          return resolve(stats);
         }
 
         const box = scanFolders[idx];
@@ -192,8 +232,10 @@ async function monitorImap(mailbox, recentWarmups) {
 
                   const match = recentWarmups.find(w => from?.toLowerCase() === w.senderEmail.toLowerCase() && subject === w.subject);
                   if (match) {
+                     stats.totalFound++;
                      msg.once("attributes", async (attrs) => {
                         if (box !== "INBOX") {
+                           stats.spamCount++;
                            await activeWarmupService.moveToInbox(mailbox, "smtp", attrs.uid);
                            log("INFO", "Rescued SMTP from Spam", { email: mailbox.email, match: match.senderEmail });
                         }
@@ -216,7 +258,7 @@ async function monitorImap(mailbox, recentWarmups) {
     
     imap.once("error", (err) => {
       log("ERROR", "IMAP Monitor Connection Error", { error: err.message });
-      resolve();
+      resolve({ totalFound: 0, spamCount: 0 });
     });
 
     imap.connect();

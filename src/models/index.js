@@ -289,31 +289,18 @@ Email.belongsTo(CampaignRecipient, {
 CampaignRecipient.hasMany(Email, { foreignKey: "recipientId", as: "emails" });
 
 SmtpSender.hasOne(SenderHealth, {
-  foreignKey: "senderId",
+  foreignKey: "mailboxId",
   onDelete: "CASCADE",
-});
-
-SenderHealth.belongsTo(SmtpSender, {
-  foreignKey: "senderId",
-});
-
-GmailSender.hasOne(SenderHealth, {
-  foreignKey: "senderId",
   constraints: false,
 });
 
-SenderHealth.belongsTo(GmailSender, {
-  foreignKey: "senderId",
+GmailSender.hasOne(SenderHealth, {
+  foreignKey: "mailboxId",
   constraints: false,
 });
 
 OutlookSender.hasOne(SenderHealth, {
-  foreignKey: "senderId",
-  constraints: false,
-});
-
-SenderHealth.belongsTo(OutlookSender, {
-  foreignKey: "senderId",
+  foreignKey: "mailboxId",
   constraints: false,
 });
 

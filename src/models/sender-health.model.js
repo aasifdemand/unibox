@@ -10,7 +10,7 @@ const SenderHealth = sequelize.define(
       primaryKey: true,
     },
 
-    senderId: {
+    mailboxId: {
       type: DataTypes.UUID,
       allowNull: false,
       unique: true,
@@ -51,6 +51,17 @@ const SenderHealth = sequelize.define(
 
     complaintRate: {
       type: DataTypes.FLOAT,
+      defaultValue: 0,
+    },
+
+    // Warmup Metrics
+    warmupSpamRate: {
+      type: DataTypes.FLOAT,
+      defaultValue: 0,
+    },
+
+    warmupTotalRescued: {
+      type: DataTypes.INTEGER,
       defaultValue: 0,
     },
 

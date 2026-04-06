@@ -606,7 +606,7 @@ export const testImapConnection = asyncHandler(async (req, res) => {
 export const updateWarmupSettings = asyncHandler(async (req, res) => {
   const { senderId } = req.params;
   const userId = req.user.id;
-  const { enabled, status, dailyLimit, replyRate } = req.body;
+  const { enabled, status, dailyLimit, replyRate, initialLimit, incrementBy, maxLimit } = req.body;
 
   const [gmail, outlook, smtp] = await Promise.all([
     GmailSender.findOne({ where: { id: senderId, userId } }),
@@ -622,6 +622,9 @@ export const updateWarmupSettings = asyncHandler(async (req, res) => {
   if (status !== undefined) updateData.warmupStatus = status;
   if (dailyLimit !== undefined) updateData.warmupDailyLimit = dailyLimit;
   if (replyRate !== undefined) updateData.warmupReplyRate = replyRate;
+  if (initialLimit !== undefined) updateData.warmupInitialLimit = initialLimit;
+  if (incrementBy !== undefined) updateData.warmupIncrementBy = incrementBy;
+  if (maxLimit !== undefined) updateData.warmupMaxLimit = maxLimit;
 
   await sender.update(updateData);
 
