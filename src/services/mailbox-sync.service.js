@@ -65,8 +65,8 @@ class MailboxSyncService {
         for (const folder of folders) {
           if (folder.id !== inbox?.id) {
             try {
-              // Only sync major folders or recent changes to avoid long hangs
-              const isMajor = ['sent', 'trash', 'spam', 'drafts', 'archive'].includes(folder.folderType);
+              // Sync major folders and recent changes to ensure folders like Spam, Trash, Important are never empty
+              const isMajor = ['sent', 'trash', 'spam', 'draft', 'drafts', 'archive', 'important', 'starred'].includes(folder.folderType);
               if (isMajor) {
                 await this.syncMessages(sender, senderType, folder);
               }
@@ -414,7 +414,16 @@ class MailboxSyncService {
   ========================= */
 
   mapGmailLabelToFolderType(labelId) {
-    const map = { INBOX: 'inbox', SENT: 'sent', TRASH: 'trash', SPAM: 'spam', DRAFT: 'draft' };
+    const map = { 
+      INBOX: 'inbox', 
+      SENT: 'sent', 
+      TRASH: 'trash', 
+      SPAM: 'spam', 
+      DRAFT: 'drafts', // Standardize to drafts (plural)
+      DRAFTS: 'drafts',
+      IMPORTANT: 'important',
+      STARRED: 'starred'
+    };
     return map[labelId] || 'custom';
   }
 
@@ -424,7 +433,9 @@ class MailboxSyncService {
     if (n.includes('sent')) return 'sent';
     if (n.includes('deleted') || n.includes('trash')) return 'trash';
     if (n.includes('junk') || n.includes('spam')) return 'spam';
-    if (n.includes('drafts')) return 'draft';
+    if (n.includes('drafts') || n.includes('draft')) return 'drafts';
+    if (n.includes('important')) return 'important';
+    if (n.includes('pinned') || n.includes('starred')) return 'starred';
     return 'custom';
   }
 
@@ -434,7 +445,9 @@ class MailboxSyncService {
     if (n.includes('sent')) return 'sent';
     if (n.includes('trash') || n.includes('deleted')) return 'trash';
     if (n.includes('spam') || n.includes('junk')) return 'spam';
-    if (n.includes('draft')) return 'draft';
+    if (n.includes('draft')) return 'drafts';
+    if (n.includes('important')) return 'important';
+    if (n.includes('starred')) return 'starred';
     return 'custom';
   }
 }
