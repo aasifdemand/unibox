@@ -372,8 +372,8 @@ export const getTimelineData = asyncHandler(async (req, res) => {
     data: result,
     meta: {
       period,
-      startDate: startDate.toISOString(),
-      endDate: now.toISOString(),
+      startDate: startDate.toISO(),
+      endDate: now.toISO(),
       totalPoints: result.length,
     },
   });
