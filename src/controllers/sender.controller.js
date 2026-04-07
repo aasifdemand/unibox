@@ -618,7 +618,13 @@ export const updateWarmupSettings = asyncHandler(async (req, res) => {
   if (!sender) throw new Error("Sender not found");
 
   const updateData = {};
-  if (enabled !== undefined) updateData.warmupEnabled = enabled;
+  if (enabled !== undefined) {
+    updateData.warmupEnabled = enabled;
+    // Auto-sync warmupStatus when the toggle is flipped, unless an explicit status is provided
+    if (status === undefined) {
+      updateData.warmupStatus = enabled ? "active" : "disabled";
+    }
+  }
   if (status !== undefined) updateData.warmupStatus = status;
   if (dailyLimit !== undefined) updateData.warmupDailyLimit = dailyLimit;
   if (replyRate !== undefined) updateData.warmupReplyRate = replyRate;
