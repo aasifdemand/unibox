@@ -249,6 +249,12 @@ const SmtpSender = sequelize.define(
       comment: "Last date (YYYY-MM-DD) the daily count was reset in user timezone",
     },
 
+    lastWarmupCheckAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      comment: "Last time this mailbox was processed by the warmup worker",
+    },
+
     /* =========================
        CONFIGURATION & REFRESH
     ========================= */

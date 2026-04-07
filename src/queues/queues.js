@@ -7,5 +7,7 @@ export const QUEUES = {
   MAILBOX_SYNC: "mailbox.sync",
   EMAIL_APPEND_SENT: "email.append_sent",
   ES_SYNC: "es.sync",
+  WARMUP_RESCUE: "warmup.rescue",
+  WARMUP_SEND: "warmup.send",
 };
 
