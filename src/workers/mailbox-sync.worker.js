@@ -1,4 +1,5 @@
-import "../models/index.js";
+import { Op } from "sequelize";
+import sequelize from "../config/db.js";
 import { initGlobalErrorHandlers } from "../utils/error-handler.js";
 import { getRabbitChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
@@ -26,44 +27,75 @@ async function processMailboxSync(msg, channel) {
   log("INFO", "Consuming sync task", { senderId, senderType });
 
   try {
-    // 1. Mark sync as started in some way or just call service
     await MailboxSyncService.syncMailbox(senderId, senderType);
-
-    // 2. Ack the message
     channel.ack(msg);
   } catch (err) {
     log("ERROR", "Mailbox sync failed", { senderId, senderType, error: err.message });
-    // Retry logic could go here, for now just nack
     channel.nack(msg, false, false);
   }
 }
 
 /**
- * Periodically queue all mailboxes for syncing
+ * Periodically identifies mailboxes due for syncing and leases them.
  */
-async function scheduleGlobalSyncs() {
-  log("INFO", "Scheduling global syncs for all verified mailboxes...");
-  
-  const [gmail, outlook, smtp] = await Promise.all([
-    GmailSender.findAll({ where: { isVerified: true } }),
-    OutlookSender.findAll({ where: { isVerified: true } }),
-    SmtpSender.findAll({ where: { isVerified: true, isActive: true } }),
-  ]);
+async function scheduleBatchSyncs() {
+  try {
+    const fifteenMinsAgo = new Date(Date.now() - 15 * 60 * 1000);
+    
+    // Process 100 per provider per tick
+    const queryOptions = {
+        where: {
+            isVerified: true,
+            [Op.or]: [
+                { lastSyncCheckAt: { [Op.lt]: fifteenMinsAgo } },
+                { lastSyncCheckAt: null }
+            ]
+        },
+        limit: 100
+    };
 
-  const all = [
-    ...gmail.map(m => ({ id: m.id, type: 'gmail' })),
-    ...outlook.map(m => ({ id: m.id, type: 'outlook' })),
-    ...smtp.map(m => ({ id: m.id, type: 'smtp' })),
-  ];
+    const providers = [
+        { model: GmailSender, type: 'gmail' },
+        { model: OutlookSender, type: 'outlook' },
+        { model: SmtpSender, type: 'smtp', where: { ...queryOptions.where, isActive: true } }
+    ];
 
-  for (const m of all) {
-    queueMailboxSync(m.id, m.type);
-    log("DEBUG", "Queued sync for mailbox", { id: m.id, type: m.type });
+    for (const p of providers) {
+        const batch = await sequelize.transaction(async (t) => {
+            const results = await p.model.findAll({
+                where: p.where || queryOptions.where,
+                limit: queryOptions.limit,
+                lock: true,
+                skipLocked: true,
+                transaction: t
+            });
+
+            if (results.length > 0) {
+                await p.model.update(
+                    { lastSyncCheckAt: new Date() },
+                    { 
+                        where: { id: { [Op.in]: results.map(r => r.id) } },
+                        transaction: t 
+                    }
+                );
+            }
+            return results;
+        });
+
+        if (batch.length > 0) {
+            log("INFO", `🔓 Leased ${batch.length} ${p.type} mailboxes for sync`);
+            for (const m of batch) {
+                queueMailboxSync(m.id, p.type);
+            }
+        }
+    }
+  } catch (err) {
+    log("ERROR", "Failed to schedule batch syncs", { error: err.message });
   }
 }
 
 (async () => {
-  log("INFO", "Mailbox Sync Worker booting...");
+  log("INFO", "Mailbox Sync Worker booting (Distributed Mode)...");
 
   const channel = await getRabbitChannel();
   if (!channel) {
@@ -72,7 +104,7 @@ async function scheduleGlobalSyncs() {
   }
 
   await channel.assertQueue(QUEUES.MAILBOX_SYNC, { durable: true });
-  channel.prefetch(1);
+  channel.prefetch(5); // Process up to 5 in parallel per worker process
 
   log("INFO", "Listening for mailbox sync tasks", { queue: QUEUES.MAILBOX_SYNC });
 
@@ -80,10 +112,10 @@ async function scheduleGlobalSyncs() {
     if (msg) processMailboxSync(msg, channel);
   });
 
-  // Optional: Global poll for sync every 15 minutes to keep DB fresh
-  // (In production, this would be a separate scheduler task)
+  // Smooth polling: check for due syncs every minute
+  scheduleBatchSyncs();
   setInterval(() => {
-    scheduleGlobalSyncs();
-  }, 15 * 60 * 1000); 
+    scheduleBatchSyncs();
+  }, 60 * 1000); 
 
 })();

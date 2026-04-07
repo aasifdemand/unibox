@@ -9,6 +9,7 @@ import { QUEUES } from "../queues/queues.js";
 import { DateTime } from "luxon";
 import pLimit from "p-limit";
 import { Op } from "sequelize";
+import sequelize from "../config/db.js";
 import { getSenderWithType } from "../models/index.js";
 import { DeliveryGuard } from "../utils/delivery-guard.js";
 
@@ -137,23 +138,51 @@ const limit = pLimit(20); // Process 20 campaigns in parallel
     }
   };
 
-  log("INFO", "🚀 Campaign Scheduler started (Parallel Mode)");
+  log("INFO", "🚀 Campaign Scheduler started (Distributed Leasing Mode)");
 
+  // Tick every 30 seconds for better responsiveness, 
+  // but it's safe because of the 60s lease window.
   setInterval(async () => {
     try {
-      log("DEBUG", "⏰ Scheduler tick");
+      log("DEBUG", "⏰ Scheduler tick (Leasing Batch)");
 
-      const campaigns = await Campaign.findAll({
-        where: { status: { [Op.in]: ["scheduled", "running"] } },
+      // 1. ATOMIC LEASING: Fetch and Lock a batch of 50 campaigns
+      const leasedCampaigns = await sequelize.transaction(async (t) => {
+        const batch = await Campaign.findAll({
+          where: {
+            status: { [Op.in]: ["scheduled", "running"] },
+            [Op.or]: [
+              { lastScheduledCheckAt: { [Op.lt]: new Date(Date.now() - 60 * 1000) } },
+              { lastScheduledCheckAt: null }
+            ]
+          },
+          limit: 50, // Process 50 campaigns per instance per tick
+          lock: true,
+          skipLocked: true, // Standard for high-scale distributed workers
+          transaction: t
+        });
+
+        if (batch.length > 0) {
+          const ids = batch.map(c => c.id);
+          await Campaign.update(
+            { lastScheduledCheckAt: new Date() },
+            { 
+              where: { id: { [Op.in]: ids } },
+              transaction: t 
+            }
+          );
+          log("DEBUG", `🔓 Leased ${batch.length} campaigns for processing`);
+        }
+        return batch;
       });
 
-      if (campaigns.length === 0) return;
+      if (leasedCampaigns.length === 0) return;
 
-      // Execute in parallel with limit
-      await Promise.all(campaigns.map(c => limit(() => processCampaign(c))));
+      // 2. Process leased batch in parallel
+      await Promise.all(leasedCampaigns.map(c => limit(() => processCampaign(c))));
 
     } catch (err) {
-      log("ERROR", "❌ Scheduler tick error", { error: err.message });
+      log("ERROR", "❌ Scheduler tick error", { error: err.message, stack: err.stack });
     }
-  }, 60_000);
+  }, 30_000); 
 })();

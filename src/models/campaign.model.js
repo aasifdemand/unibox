@@ -190,6 +190,11 @@ const Campaign = sequelize.define(
       type: DataTypes.DATE,
       allowNull: true,
     },
+    // Tracking for scalable distributed scheduler
+    lastScheduledCheckAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
   },
   {
     tableName: "campaigns",
@@ -202,6 +207,7 @@ const Campaign = sequelize.define(
       { fields: ["scheduledAt"] },
       // Add composite index for sender lookup
       { fields: ["senderId", "senderType"] },
+      { fields: ["lastScheduledCheckAt"] },
     ],
   },
 );

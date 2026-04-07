@@ -255,6 +255,12 @@ const SmtpSender = sequelize.define(
       comment: "Last time this mailbox was processed by the warmup worker",
     },
 
+    // Tracking for scalable distributed sync
+    lastSyncCheckAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+
     /* =========================
        CONFIGURATION & REFRESH
     ========================= */
@@ -303,6 +309,7 @@ const SmtpSender = sequelize.define(
       { fields: ["isVerified"] },
       { fields: ["isActive"] },
       { fields: ["provider"] },
+      { fields: ["lastSyncCheckAt"] },
     ],
   },
 );
