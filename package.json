@@ -17,6 +17,7 @@
     "imap-append": "node src/workers/imap-append.worker.js",
     "warmup": "node src/workers/active-warmup.worker.js",
     "warmup-monitor": "node src/workers/active-warmup-monitor.worker.js",
+    "warmup-processor" : "node src/workers/warmup-processor.worker.js",
     "es-sync": "node src/workers/elasticsearch-sync.worker.js",
     "lint": "eslint . --max-warnings=0",
     "lint:fix": "eslint . --fix"
