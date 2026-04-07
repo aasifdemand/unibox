@@ -28,16 +28,31 @@ function nextSendableTime(campaign) {
 
   const [startH, startM] = startTime.split(":").map(Number);
   const [endH, endM] = endTime.split(":").map(Number);
+  const startMins = startH * 60 + startM;
+  const endMins = endH * 60 + endM;
 
   let cursor = DateTime.now().setZone(tz);
+  
   for (let i = 0; i < 14 * 24 * 60; i += 1) {
     const dayName = cursor.toFormat("EEEE").toLowerCase();
     const curMinutes = cursor.hour * 60 + cursor.minute;
-    const startMins = startH * 60 + startM;
-    const endMins = endH * 60 + endM;
-    if (days.includes(dayName) && curMinutes >= startMins && curMinutes < endMins) return null;
+    
+    let isInsideWindow = false;
+    if (startMins <= endMins) {
+      isInsideWindow = curMinutes >= startMins && curMinutes <= endMins;
+    } else {
+      isInsideWindow = curMinutes >= startMins || curMinutes <= endMins;
+    }
+
+    if (days.includes(dayName) && isInsideWindow) {
+      if (i === 0) return null; // Valid right now, process immediately
+      return cursor.toJSDate(); // Valid in future, schedule for then
+    }
+    
     cursor = cursor.plus({ minutes: 1 });
   }
+  
+  // Failsafe if no days configured properly
   return DateTime.now().setZone(tz).plus({ days: 1 }).set({ hour: startH, minute: startM }).toJSDate();
 }
 

@@ -16,16 +16,21 @@ export class DeliveryGuard {
     SMTP: { initial: 100, max: 5000, dailyIncrement: 50 },
   };
 
-  /**
-   * Calculates the allowed daily volume for a sender based on age.
-   */
   static async getAllowedVolume(sender) {
-    const providerKey = sender.provider?.toUpperCase() || "SMTP";
+    // 1. Properly detect Provider Type to prevent generic SMTP overrides
+    let providerKey = "SMTP";
+    const modelName = sender.constructor?.name || "";
+    if (modelName === "GmailSender" || sender.type === "gmail") providerKey = "GMAIL";
+    if (modelName === "OutlookSender" || sender.type === "outlook") providerKey = "OUTLOOK";
+
     const config = this.LIMITS[providerKey] || this.LIMITS.SMTP;
 
-    // Calculate account age in days
-    const createdDate = DateTime.fromJSDate(sender.createdAt);
-    const ageInDays = Math.floor(DateTime.now().diff(createdDate, "days").days);
+    // 2. Calculate Calendar Age tied to Timezone
+    const tz = sender.timezone || sender.user?.timezone || "UTC";
+    const createdMidnight = DateTime.fromJSDate(sender.createdAt).setZone(tz).startOf("day");
+    const currentMidnight = DateTime.now().setZone(tz).startOf("day");
+    
+    const ageInDays = Math.floor(currentMidnight.diff(createdMidnight, "days").days);
 
     // Volume = Initial + (Age * Increment)
     const calculatedLimit = config.initial + ageInDays * config.dailyIncrement;
@@ -40,8 +45,9 @@ export class DeliveryGuard {
   static async canSendToday(sender) {
     const allowedLimit = await this.getAllowedVolume(sender);
 
-    // Count emails sent by this sender today (UTC)
-    const startOfToday = DateTime.now().toUTC().startOf("day").toJSDate();
+    // Count emails sent by this sender today (in their local timezone)
+    const tz = sender.timezone || sender.user?.timezone || "UTC";
+    const startOfToday = DateTime.now().setZone(tz).startOf("day").toUTC().toJSDate();
 
     const sentTodayCount = await Email.count({
       where: {

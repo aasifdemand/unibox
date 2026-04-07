@@ -283,7 +283,7 @@ export const getTimelineData = asyncHandler(async (req, res) => {
   }
 
   // Timezone-aware grouping clause
-  const dateField = `("CampaignSend"."sentAt" AT TIME ZONE 'UTC' AT TIME ZONE '${userTz}')`;
+  const dateField = `("CampaignSend"."sentAt" AT TIME ZONE '${userTz}')`;
   const dateTrunc = Sequelize.fn("date_trunc", truncateBy, Sequelize.literal(dateField));
 
   const timeline = await CampaignSend.findAll({
@@ -574,7 +574,7 @@ export const getHourlyStats = asyncHandler(async (req, res) => {
   const userTzInput = req.user.timezone || "UTC";
   const userTz = isValidTz(userTzInput) ? userTzInput : "UTC";
   // Timezone-aware hour extraction
-  const hourField = `EXTRACT(HOUR FROM "CampaignSend"."sentAt" AT TIME ZONE 'UTC' AT TIME ZONE '${userTz}')`;
+  const hourField = `EXTRACT(HOUR FROM "CampaignSend"."sentAt" AT TIME ZONE '${userTz}')`;
   const hourAttr = [Sequelize.literal(hourField), "hour"];
 
   const hourly = await CampaignSend.findAll({
