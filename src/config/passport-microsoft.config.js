@@ -1,5 +1,6 @@
 import passport from "passport";
 import { Strategy as MicrosoftStrategy } from "passport-microsoft";
+import { testOutlookConnection } from "../utils/outlook-tester.js";
 
 passport.use(
   new MicrosoftStrategy(
@@ -19,13 +20,21 @@ passport.use(
         "User.Read",
         "Mail.Send",
         "Mail.Read",
+        "Mail.ReadWrite",
       ],
     },
-    (req, accessToken, refreshToken, params, profile, done) => {
-      profile._accessToken = accessToken;
-      profile._refreshToken = refreshToken;
-      profile._expiresIn = params.expires_in;
-      return done(null, profile);
+    async (req, accessToken, refreshToken, params, profile, done) => {
+      try {
+        // Verify Outlook API is enabled and accessible
+        await testOutlookConnection({ accessToken });
+
+        profile._accessToken = accessToken;
+        profile._refreshToken = refreshToken;
+        profile._expiresIn = params.expires_in;
+        return done(null, profile);
+      } catch (err) {
+        return done(err);
+      }
     },
   ),
 );

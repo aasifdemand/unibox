@@ -1,5 +1,6 @@
 import passport from "passport";
 import { Strategy as GoogleStrategy } from "passport-google-oauth20";
+import { testGmailConnection } from "../utils/gmail-tester.js";
 
 passport.use(
   "google-sender",
@@ -12,6 +13,22 @@ passport.use(
     },
     async (req, accessToken, refreshToken, params, profile, done) => {
       try {
+        // 1. Verify required scopes
+        const grantedScopes = params.scope || "";
+        const requiredScopes = [
+          "gmail.readonly",
+          "gmail.modify",
+          "gmail.send"
+        ];
+        
+        const missingScopes = requiredScopes.filter(s => !grantedScopes.includes(s));
+        if (missingScopes.length > 0) {
+          return done(new Error(`Missing required permissions: ${missingScopes.join(", ")}. Please ensure you check all permission boxes on the consent screen.`));
+        }
+
+        // 2. Verify Gmail API is enabled
+        await testGmailConnection({ accessToken });
+
         // IMPORTANT: Google might return refreshToken in params
         const actualRefreshToken = refreshToken || params.refresh_token;
 
@@ -24,7 +41,7 @@ passport.use(
           email: profile.emails[0].value,
           displayName: profile.displayName,
           accessToken,
-          refreshToken: actualRefreshToken, // ← Make sure this is saved
+          refreshToken: actualRefreshToken,
           googleId: profile.id,
           profile: profile._json,
         });

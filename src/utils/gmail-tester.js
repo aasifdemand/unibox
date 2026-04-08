@@ -1,6 +1,6 @@
 import { google } from "googleapis";
 
-export const testGmailConnection = async ({ accessToken, email }) => {
+export const testGmailConnection = async ({ accessToken }) => {
   try {
     const oauth2Client = new google.auth.OAuth2();
     oauth2Client.setCredentials({ access_token: accessToken });
@@ -16,6 +16,7 @@ export const testGmailConnection = async ({ accessToken, email }) => {
       message: "Gmail connection successful",
     };
   } catch (error) {
-    throw new Error(`Gmail connection failed: ${error.message}`);
+    const message = error.response?.data?.error?.message || error.message;
+    throw new Error(`Gmail API Verification Failed: ${message}`);
   }
 };

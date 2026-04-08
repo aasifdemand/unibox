@@ -1,6 +1,5 @@
 import { Router } from "express";
 import { protect } from "../middlewares/auth.middleware.js";
-import { asyncHandler } from "../helpers/async-handler.js";
 import {
   createSender,
   listSenders,
@@ -206,103 +205,69 @@ router.get("/oauth/gmail", protect, (req, res, next) => {
  */
 router.get(
   "/oauth/gmail/callback",
-  passportGoogle.authenticate("google-sender", {
-    session: false,
-    failureRedirect: `${process.env.FRONTEND_URL || "http://localhost:8080"}/dashboard/audience?error=gmail_auth_failed`,
-  }),
-  asyncHandler(async (req, res) => {
-    try {
-      const userData = req.user; // This comes from Passport strategy
-
-      if (!userData) {
-        return res.redirect(
-          `${process.env.FRONTEND_URL || "http://localhost:8080"}/dashboard/audience?error=auth_failed`,
-        );
+  (req, res, next) => {
+    passportGoogle.authenticate("google-sender", { session: false }, async (err, userData) => {
+      const frontendUrl = (process.env.FRONTEND_URL || "http://localhost:8080").replace(/\/$/, "");
+      
+      if (err || !userData) {
+        const message = err?.message || "Gmail authentication failed";
+        return res.redirect(`${frontendUrl}/dashboard/mailboxes?error=auth_failed&message=${encodeURIComponent(message)}`);
       }
 
-      const email = userData.email || userData.profile?.emails?.[0]?.value;
-      const displayName =
-        userData.displayName ||
-        userData.profile?.displayName ||
-        email?.split("@")[0];
-      const accessToken = userData.accessToken;
-      const refreshToken = userData.refreshToken;
-      const googleId = userData.googleId || userData.profile?.id;
-      const userId = userData.userId; // From state parameter
+      try {
+        const email = userData.email || userData.profile?.emails?.[0]?.value;
+        const displayName = userData.displayName || userData.profile?.displayName || email?.split("@")[0];
+        const accessToken = userData.accessToken;
+        const refreshToken = userData.refreshToken;
+        const googleId = userData.googleId || userData.profile?.id;
+        const userId = userData.userId;
 
-      if (!email) {
-        return res.redirect(
-          `${process.env.FRONTEND_URL || "http://localhost:8080"}/dashboard/audience?error=no_email`,
-        );
-      }
+        if (!email) return res.redirect(`${frontendUrl}/dashboard/mailboxes?error=no_email`);
+        if (!userId) return res.redirect(`${frontendUrl}/dashboard/mailboxes?error=no_user_id`);
 
-      if (!userId) {
-        return res.redirect(
-          `${process.env.FRONTEND_URL || "http://localhost:8080"}/dashboard/audience?error=no_user_id`,
-        );
-      }
-
-      // Check if Gmail sender already exists
-      const existingSender = await GmailSender.findOne({
-        where: {
-          userId: userId,
-          email: email.toLowerCase(),
-        },
-      });
-
-      let sender;
-      if (existingSender) {
-        // Update existing sender
-        await existingSender.update({
-          accessToken,
-          refreshToken,
-          expiresAt: new Date(Date.now() + 3600 * 1000),
-          isVerified: true, // ← MAKE SURE THIS IS SET
-          isActive: true,
-          googleId,
-          lastUsedAt: new Date(),
+        // Check if Gmail sender already exists
+        const existingSender = await GmailSender.findOne({
+          where: { userId, email: email.toLowerCase() },
         });
-        sender = existingSender;
-      } else {
-        // Create new Gmail sender
-        sender = await GmailSender.create({
-          userId: userId,
-          email: email.toLowerCase(),
-          displayName: displayName || email.split("@")[0],
-          domain: email.split("@")[1],
-          accessToken,
-          refreshToken,
-          expiresAt: new Date(Date.now() + 3600 * 1000),
-          googleId,
-          isVerified: true, // ← MAKE SURE THIS IS SET
-          isActive: true,
-          lastUsedAt: new Date(),
-        });
+
+        let sender;
+        if (existingSender) {
+          await existingSender.update({
+            accessToken,
+            refreshToken,
+            expiresAt: new Date(Date.now() + 3600 * 1000),
+            isVerified: true,
+            isActive: true,
+            googleId,
+            lastUsedAt: new Date(),
+          });
+          sender = existingSender;
+        } else {
+          sender = await GmailSender.create({
+            userId,
+            email: email.toLowerCase(),
+            displayName: displayName || email.split("@")[0],
+            domain: email.split("@")[1],
+            accessToken,
+            refreshToken,
+            expiresAt: new Date(Date.now() + 3600 * 1000),
+            googleId,
+            isVerified: true,
+            isActive: true,
+            lastUsedAt: new Date(),
+          });
+        }
+
+        senderHealthService.evaluateSender(sender.id, "gmail").catch(console.error);
+        queueMailboxSync(sender.id, "gmail").catch(console.error);
+
+        return res.redirect(`${frontendUrl}/dashboard/mailboxes?success=gmail_connected&senderId=${sender.id}`);
+      } catch (saveErr) {
+        console.error("Gmail save error:", saveErr);
+        return res.redirect(`${frontendUrl}/dashboard/mailboxes?error=save_failed&message=${encodeURIComponent(saveErr.message)}`);
       }
-
-      // Trigger health check and initial sync
-      senderHealthService.evaluateSender(sender.id, "gmail").catch(console.error);
-      queueMailboxSync(sender.id, "gmail").catch(console.error);
-
-      const frontendUrl = process.env.FRONTEND_URL || "http://localhost:8080";
-      const cleanUrl = frontendUrl.endsWith("/")
-        ? frontendUrl.slice(0, -1)
-        : frontendUrl;
-
-      return res.redirect(
-        `${cleanUrl}/dashboard/audience?success=gmail_connected&senderId=${sender.id}`,
-      );
-    } catch (err) {
-      console.error("Gmail OAuth callback error:", err);
-      const frontendUrl = process.env.FRONTEND_URL || "http://localhost:8080";
-      const cleanUrl = frontendUrl.endsWith("/")
-        ? frontendUrl.slice(0, -1)
-        : frontendUrl;
-      return res.redirect(
-        `${cleanUrl}/dashboard/audience?error=save_failed&message=${encodeURIComponent(err.message)}`,
-      );
-    }
-  }),
+    })(req, res, next);
+  }
 );
 // =========================
 // OUTLOOK OAUTH ENDPOINTS
@@ -359,98 +324,69 @@ router.get("/oauth/outlook", protect, (req, res, next) => {
  */
 router.get(
   "/oauth/outlook/callback",
-  passportMicrosoft.authenticate("microsoft", {
-    session: false,
-    failureRedirect: `${process.env.FRONTEND_URL || "http://localhost:8080"}/dashboard/audience?error=outlook_auth_failed`,
-  }),
-  asyncHandler(async (req, res) => {
-    try {
-      // Extract userId from state parameter
-      const state = req.query.state;
-      const userId = state?.replace("sender-", "");
+  (req, res, next) => {
+    passportMicrosoft.authenticate("microsoft", { session: false }, async (err, profile) => {
+      const frontendUrl = (process.env.FRONTEND_URL || "http://localhost:8080").replace(/\/$/, "");
 
-      if (!userId) {
-        throw new Error("Missing user identification");
+      if (err || !profile) {
+        const message = err?.message || "Outlook authentication failed";
+        return res.redirect(`${frontendUrl}/dashboard/mailboxes?error=auth_failed&message=${encodeURIComponent(message)}`);
       }
 
-      const {
-        _accessToken,
-        _refreshToken,
-        _expiresIn,
-        displayName,
-        emails,
-        _json,
-      } = req.user;
+      try {
+        const state = req.query.state;
+        const userId = state?.replace("sender-", "");
 
-      const email =
-        emails?.[0]?.value || _json?.mail || _json?.userPrincipalName;
+        if (!userId) throw new Error("Missing user identification");
 
-      if (!email) {
-        throw new Error("Email not found in Microsoft profile");
-      }
+        const { _accessToken, _refreshToken, _expiresIn, displayName, emails, _json } = profile;
+        const email = emails?.[0]?.value || _json?.mail || _json?.userPrincipalName;
 
-      // Check if Outlook sender already exists
-      const existingSender = await OutlookSender.findOne({
-        where: {
-          userId,
-          email: email.toLowerCase(),
-        },
-      });
+        if (!email) throw new Error("Email not found in Microsoft profile");
 
-      let sender;
-      if (existingSender) {
-        // Update existing sender
-        await existingSender.update({
-          accessToken: _accessToken,
-          refreshToken: _refreshToken,
-          expiresAt: new Date(Date.now() + _expiresIn * 1000),
-          isVerified: true,
-          microsoftId: req.user.id,
-          lastUsedAt: new Date(),
-          isVerified: true, // ← MAKE SURE THIS IS SET
-          isActive: true,
+        // Check if Outlook sender already exists
+        const existingSender = await OutlookSender.findOne({
+          where: { userId, email: email.toLowerCase() },
         });
-        sender = existingSender;
-      } else {
-        // Create new Outlook sender
-        sender = await OutlookSender.create({
-          userId,
-          email: email.toLowerCase(),
-          displayName: displayName || email.split("@")[0],
-          domain: email.split("@")[1],
-          accessToken: _accessToken,
-          refreshToken: _refreshToken,
-          expiresAt: new Date(Date.now() + _expiresIn * 1000),
-          microsoftId: req.user.id,
-          isVerified: true, // ← MAKE SURE THIS IS SET
-          isActive: true,
-          lastUsedAt: new Date(),
-        });
+
+        let sender;
+        if (existingSender) {
+          await existingSender.update({
+            accessToken: _accessToken,
+            refreshToken: _refreshToken,
+            expiresAt: new Date(Date.now() + _expiresIn * 1000),
+            isVerified: true,
+            microsoftId: profile.id,
+            lastUsedAt: new Date(),
+            isActive: true,
+          });
+          sender = existingSender;
+        } else {
+          sender = await OutlookSender.create({
+            userId,
+            email: email.toLowerCase(),
+            displayName: displayName || email.split("@")[0],
+            domain: email.split("@")[1],
+            accessToken: _accessToken,
+            refreshToken: _refreshToken,
+            expiresAt: new Date(Date.now() + _expiresIn * 1000),
+            microsoftId: profile.id,
+            isVerified: true,
+            isActive: true,
+            lastUsedAt: new Date(),
+          });
+        }
+
+        senderHealthService.evaluateSender(sender.id, "outlook").catch(console.error);
+        queueMailboxSync(sender.id, "outlook").catch(console.error);
+
+        return res.redirect(`${frontendUrl}/dashboard/mailboxes?success=outlook_connected&senderId=${sender.id}`);
+      } catch (saveErr) {
+        console.error("Outlook save error:", saveErr);
+        return res.redirect(`${frontendUrl}/dashboard/mailboxes?error=save_failed&message=${encodeURIComponent(saveErr.message)}`);
       }
-
-      // Trigger health check and initial sync
-      senderHealthService.evaluateSender(sender.id, "outlook").catch(console.error);
-      queueMailboxSync(sender.id, "outlook").catch(console.error);
-
-      const frontendUrl = process.env.FRONTEND_URL || "http://localhost:8080";
-      const cleanUrl = frontendUrl.endsWith("/")
-        ? frontendUrl.slice(0, -1)
-        : frontendUrl;
-
-      return res.redirect(
-        `${cleanUrl}/dashboard/audience?success=outlook_connected&senderId=${sender.id}`,
-      );
-    } catch (err) {
-      console.error("Outlook OAuth callback error:", err);
-      const frontendUrl = process.env.FRONTEND_URL || "http://localhost:8080";
-      const cleanUrl = frontendUrl.endsWith("/")
-        ? frontendUrl.slice(0, -1)
-        : frontendUrl;
-      return res.redirect(
-        `${cleanUrl}/dashboard/audience?error=save_failed&message=${encodeURIComponent(err.message)}`,
-      );
-    }
-  }),
+    })(req, res, next);
+  }
 );
 
 // =========================
