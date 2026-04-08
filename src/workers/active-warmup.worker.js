@@ -82,9 +82,6 @@ export async function runWarmupProducerTick(options = {}) {
         
         sender.warmupCurrentSent = 0;
         sender.warmupDailyLimit = nextLimit;
-      } else {
-          // Mark as checked so we don't pick it up again immediately
-          await sender.model.update({ lastWarmupCheckAt: new Date() }, { where: { id: sender.id } });
       }
 
       // B. QUIET HOURS: Skip if not 8AM-8PM
@@ -95,6 +92,8 @@ export async function runWarmupProducerTick(options = {}) {
 
       // C. ENQUEUE: If limit not reached and probability hits
       if (sender.warmupCurrentSent >= sender.warmupDailyLimit) {
+        // Still update the timestamp so we don't keep picking up "Finished" senders in every tick
+        await sender.model.update({ lastWarmupCheckAt: new Date() }, { where: { id: sender.id } });
         continue;
       }
 
@@ -106,6 +105,7 @@ export async function runWarmupProducerTick(options = {}) {
           email: sender.email
         })), { persistent: true });
         
+        await sender.model.update({ lastWarmupCheckAt: new Date() }, { where: { id: sender.id } });
         log("INFO", "📤 Enqueued Warmup Send Task", { email: sender.email });
       }
     }

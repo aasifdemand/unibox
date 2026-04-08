@@ -35,6 +35,7 @@ export const createSender = asyncHandler(async (req, res) => {
     provider = "custom",
     dailyLimit = 500,
     hourlyLimit = 100,
+    isSystemAccount = false,
   } = req.body;
 
   if (!email || !displayName) {
@@ -107,6 +108,7 @@ export const createSender = asyncHandler(async (req, res) => {
     lastTestedAt: new Date(),
     isVerified: true,
     isActive: true,
+    isSystemAccount,
   });
 
   // Run health check and trigger initial mailbox sync async
@@ -152,6 +154,7 @@ export const bulkCreateSenders = asyncHandler(async (req, res) => {
         imapSecure = true,
         imapUser,
         imapPassword,
+        isSystemAccount = false,
       } = senderData;
 
       if (!email || !displayName || !smtpHost || !smtpUser || !smtpPassword) {
@@ -186,6 +189,7 @@ export const bulkCreateSenders = asyncHandler(async (req, res) => {
         imapPassword: imapPassword || smtpPassword,
         isVerified: true,
         isActive: true,
+        isSystemAccount,
       });
 
       senderHealthService.evaluateSender(sender.id).catch(() => { });

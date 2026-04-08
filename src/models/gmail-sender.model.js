@@ -202,6 +202,12 @@ const GmailSender = sequelize.define(
       comment: "Last time this mailbox was processed by the warmup worker",
     },
 
+    lastWarmupRescueAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      comment: "Last time this mailbox was processed by the warmup monitor worker",
+    },
+
     // Tracking for scalable distributed sync
     lastSyncCheckAt: {
       type: DataTypes.DATE,

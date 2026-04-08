@@ -35,10 +35,11 @@ async function runMonitorProducerTick() {
     const queryOptions = {
         where: {
             warmupEnabled: true,
+            warmupStatus: "active",
             isVerified: true,
             [Op.or]: [
-                { lastWarmupCheckAt: { [Op.lt]: fifteenMinsAgo } },
-                { lastWarmupCheckAt: null }
+                { lastWarmupRescueAt: { [Op.lt]: fifteenMinsAgo } },
+                { lastWarmupRescueAt: null }
             ]
         },
         limit: 100, // Process in batches of 100 per producer tick
@@ -67,7 +68,7 @@ async function runMonitorProducerTick() {
     for (const item of allToEnqueue) {
         // 1. Mark as "Checked" immediately to prevent re-fetch in next producer tick
         await item.model.update(
-            { lastWarmupCheckAt: new Date() },
+            { lastWarmupRescueAt: new Date() },
             { where: { id: item.id } }
         );
 
