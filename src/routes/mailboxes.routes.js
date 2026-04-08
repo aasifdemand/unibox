@@ -110,6 +110,7 @@ import {
 import {
   getMailboxes,
   getMailboxById,
+  deleteMailbox,
 } from "../controllers/mailboxes.controller.js";
 
 const router = Router();
@@ -132,6 +133,7 @@ router.use(protect);
 // =========================
 router.get("/", getMailboxes);
 router.get("/:mailboxId", getMailboxById);
+router.delete("/:mailboxId", deleteMailbox);
 
 // =========================
 // GMAIL ROUTES

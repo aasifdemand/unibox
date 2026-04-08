@@ -18,6 +18,7 @@ import SenderHealth from "../models/sender-health.model.js";
 import { MailboxFolder, MailboxMessage } from "../models/index.js";
 import { senderHealthService } from "../services/sender-health.service.js";
 import { queueMailboxSync } from "../queues/mailbox.queue.js";
+import { mailboxCleanupService } from "../services/mailbox-cleanup.service.js";
 
 const MAILBOX_CACHE_TTL = 1800; // 30 minutes
 
@@ -582,6 +583,26 @@ export const getMailboxById = asyncHandler(async (req, res) => {
   };
 
   res.json({ success: true, data: mailbox });
+});
+
+/**
+ * deleteMailbox
+ * Unified endpoint for disconnecting and wiping any mailbox type.
+ */
+export const deleteMailbox = asyncHandler(async (req, res) => {
+  const { mailboxId } = req.params;
+  const userId = req.user.id;
+
+  const success = await mailboxCleanupService.cleanup(mailboxId, userId);
+
+  if (!success) {
+    throw new AppError("Mailbox not found or already deleted", 404);
+  }
+
+  res.json({
+    success: true,
+    message: "Mailbox disconnected and data cleaned up successfully",
+  });
 });
 // =========================
 // GET OUTLOOK MESSAGES - WITH HTML CONTENT

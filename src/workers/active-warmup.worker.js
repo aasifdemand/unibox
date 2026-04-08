@@ -84,13 +84,7 @@ export async function runWarmupProducerTick(options = {}) {
         sender.warmupDailyLimit = nextLimit;
       }
 
-      // B. QUIET HOURS: Skip if not 8AM-8PM
-      const currentHour = DateTime.now().setZone(timezone).hour;
-      if (currentHour < 8 || currentHour >= 20) {
-        continue;
-      }
-
-      // C. ENQUEUE: If limit not reached and probability hits
+      // B. ENQUEUE: If limit not reached and probability hits
       if (sender.warmupCurrentSent >= sender.warmupDailyLimit) {
         // Still update the timestamp so we don't keep picking up "Finished" senders in every tick
         await sender.model.update({ lastWarmupCheckAt: new Date() }, { where: { id: sender.id } });
@@ -98,7 +92,9 @@ export async function runWarmupProducerTick(options = {}) {
       }
 
       // Human Randomness: 20% chance per check
-      if (options.forceAll || Math.random() < 0.2) {
+      // EXCEPT: Always send the first email of the day (CurrentSent = 0) to ensure quick start
+      const isFirstSendOfDay = sender.warmupCurrentSent === 0;
+      if (options.forceAll || isFirstSendOfDay || Math.random() < 0.2) {
         channel.sendToQueue(QUEUES.WARMUP_SEND, Buffer.from(JSON.stringify({
           senderId: sender.id,
           senderType: sender.type,
