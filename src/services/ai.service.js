@@ -18,29 +18,26 @@ const extractJson = (text) => {
   }
 
   try {
-    // Try direct parse first
+    // 1. Try direct parse
     return JSON.parse(text);
   } catch (e) {
-    console.log(e);
-
-    // Try to find JSON block in markdown
-    const match = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-    if (match) {
-      try {
-        return JSON.parse(match[1]);
-      } catch (inner) {
-        console.error("Failed to parse matched JSON block:", inner.message);
-      }
-    }
-
-    // Try to find anything between [ ] or { }
+    // 2. Try to find anything between [ ] or { }
     const bracketMatch = text.match(/\[[\s\S]*\]/) || text.match(/\{[\s\S]*\}/);
     if (bracketMatch) {
       try {
-        return JSON.parse(bracketMatch[0]);
+        const candidate = bracketMatch[0].trim();
+        return JSON.parse(candidate);
       } catch (inner) {
         console.error("Failed to parse bracketed content:", inner.message);
       }
+    }
+
+    // 3. Last ditch: try to strip markdown blocks manually
+    const stripped = text.replace(/```(?:json)?/g, '').replace(/```/g, '').trim();
+    try {
+      return JSON.parse(stripped);
+    } catch (inner) {
+       console.error("Last ditch parse failed:", inner.message);
     }
 
     console.error("Raw AI Response that failed parsing:", text);
@@ -93,17 +90,20 @@ export const generateSequence = async (goal, tone = "professional", stepsCount =
     ? variables.map(v => `{{${v}}}`).join(", ")
     : "{{first_name}}, {{company}}, {{sender_name}}, {{job_title}}, {{city}}";
 
-  const prompt = `Goal: ${goal}
+  const prompt = `Task: Write a ${stepsCount}-step sales email sequence.
+Goal: ${goal}
 Tone: ${tone}
-Task: Write a ${stepsCount}-step sales sequence about this goal.
 Variables: ${varString}
-Format: Return ONLY a JSON array of objects with keys "subject" and "body".
 
-Requirements for "body":
-- Start with a salutation (e.g. "Hi {{first_name}},").
-- Use multiple paragraphs with double newlines (\n\n).
-- EVERY SINGLE STEP must end with a professional sign-off and {{sender_name}} (e.g. "Best,\n{{sender_name}}").
-- Example: [{"subject":"hi","body":"Hi {{first_name}},\n\nI hope you're well.\n\n[Body...]\n\nBest,\n{{sender_name}}"}]`;
+Format Requirements:
+- Return ONLY a raw JSON array of objects.
+- Keys: "subject" (string), "body" (string).
+- NO preamble, NO markdown wrapping, NO explanations.
+- Body must include "{{sender_name}}" at the end.
+- Use \\n for newlines in the JSON body string.
+
+Example Output:
+[{"subject":"Check this out","body":"Hi {{first_name}},\\n\\nI saw your work at {{company}}...\\n\\nBest,\\n{{sender_name}}"}]`;
 
   try {
     console.log(`🚀 Generating sequence (${OLLAMA_MODEL})...`);

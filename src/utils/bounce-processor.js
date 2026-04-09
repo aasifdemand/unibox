@@ -38,6 +38,7 @@ export class BounceProcessor {
       if (type === "hard" && email.recipientEmail) {
         await GlobalEmailRegistry.upsert({
           normalizedEmail: email.recipientEmail.toLowerCase(),
+          userId: email.userId,
           verificationStatus: "invalid", // Treat as dead
           lastSeenAt: new Date(),
         });

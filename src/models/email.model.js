@@ -27,7 +27,7 @@ const Email = sequelize.define(
     },
     recipientId: {
       type: DataTypes.UUID,
-      allowNull: false,
+      allowNull: true,
       references: {
         model: "campaign_recipients",
         key: "id",

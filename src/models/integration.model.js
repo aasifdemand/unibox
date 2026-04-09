@@ -41,6 +41,14 @@ const Integration = sequelize.define(
       type: DataTypes.DATE,
       allowNull: true,
     },
+    syncStatus: {
+      type: DataTypes.ENUM("healthy", "error"),
+      defaultValue: "healthy",
+    },
+    lastError: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
   },
   {
     tableName: "integrations",

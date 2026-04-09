@@ -23,6 +23,9 @@ import Integration from "./integration.model.js";
 import MailboxFolder from "./mailbox-folder.model.js";
 import MailboxMessage from "./mailbox-message.model.js";
 import WarmupMessage from "./warmup-message.model.js";
+import { INDICES, upsertDocument, deleteDocument } from "../services/elasticsearch.service.js";
+import { getRabbitChannel } from "../queues/rabbit.js";
+import { QUEUES } from "../queues/queues.js";
 /* =====================================================
    USER OWNERSHIP
 ===================================================== */
@@ -242,6 +245,7 @@ ListUploadBatch.hasMany(ListUploadRecord, {
 });
 ListUploadRecord.belongsTo(ListUploadBatch, {
   foreignKey: "batchId",
+  as: "batch",
 });
 
 Campaign.belongsTo(ListUploadBatch, {
@@ -403,9 +407,8 @@ export async function getUserSenders(userId) {
    The es-sync worker handles the actual indexing asynchronously.
 ===================================================== */
 
-import { getRabbitChannel } from "../queues/rabbit.js";
-import { QUEUES } from "../queues/queues.js";
-import { INDICES } from "../services/elasticsearch.service.js";
+
+
 
 function publishEsSync(action, index, id, doc = null) {
   // Non-blocking — never throw into the model lifecycle
@@ -487,111 +490,116 @@ Email.addHook("afterUpdate", "esSyncEmailUpdate", (instance) => {
 });
 
 // ── ListUploadRecord hooks (Contacts / Audience) ──────────────────────────────
-ListUploadRecord.addHook("afterCreate", "esSyncContactCreate", (instance) => {
-  publishEsSync("upsert", INDICES.CONTACTS, instance.id, {
-    id:              instance.id,
-    // userId is not on this model — batchId is the tenant key; we index by batchId
-    // and the search controller will scope by batchId or skip userId filter for contacts
-    batchId:         instance.batchId,
-    rawEmail:        instance.rawEmail,
+ListUploadRecord.addHook("afterCreate", "esSyncContactCreate", async (instance) => {
+  const batch = await ListUploadBatch.findByPk(instance.batchId);
+  if (!batch) return;
+  upsertDocument(INDICES.CONTACTS, instance.id, {
+    id: instance.id,
+    userId: batch.userId,
+    batchId: instance.batchId,
+    rawEmail: instance.rawEmail,
     normalizedEmail: instance.normalizedEmail,
-    domain:          instance.domain,
-    name:            instance.name,
-    status:          instance.status,
-    company:         instance.metadata?.company || null,
-    phone:           instance.metadata?.phone   || null,
-    title:           instance.metadata?.title   || null,
-    createdAt:       instance.createdAt,
+    domain: instance.domain,
+    name: instance.name,
+    status: instance.status,
+    company: instance.metadata?.company || null,
+    phone: instance.metadata?.phone || null,
+    title: instance.metadata?.title || null,
+    createdAt: instance.createdAt,
   });
 });
 
-ListUploadRecord.addHook("afterUpdate", "esSyncContactUpdate", (instance) => {
-  publishEsSync("upsert", INDICES.CONTACTS, instance.id, {
-    id:              instance.id,
-    batchId:         instance.batchId,
-    rawEmail:        instance.rawEmail,
+ListUploadRecord.addHook("afterUpdate", "esSyncContactUpdate", async (instance) => {
+  const batch = await ListUploadBatch.findByPk(instance.batchId);
+  if (!batch) return;
+
+  upsertDocument(INDICES.CONTACTS, instance.id, {
+    id: instance.id,
+    userId: batch.userId,
+    batchId: instance.batchId,
+    rawEmail: instance.rawEmail,
     normalizedEmail: instance.normalizedEmail,
-    domain:          instance.domain,
-    name:            instance.name,
-    status:          instance.status,
-    company:         instance.metadata?.company || null,
-    phone:           instance.metadata?.phone   || null,
-    title:           instance.metadata?.title   || null,
-    createdAt:       instance.createdAt,
+    domain: instance.domain,
+    name: instance.name,
+    status: instance.status,
+    company: instance.metadata?.company || null,
+    phone: instance.metadata?.phone || null,
+    title: instance.metadata?.title || null,
+    createdAt: instance.createdAt,
   });
 });
 
 ListUploadRecord.addHook("afterDestroy", "esSyncContactDelete", (instance) => {
-  publishEsSync("delete", INDICES.CONTACTS, instance.id);
+  deleteDocument(INDICES.CONTACTS, instance.id);
 });
 
 // ── Lead hooks ────────────────────────────────────────────────────────────────
 Lead.addHook("afterCreate", "esSyncLeadCreate", (instance) => {
-  publishEsSync("upsert", INDICES.LEADS, instance.id, {
-    id:             instance.id,
-    userId:         instance.userId,
-    contactId:      instance.contactId,
-    stageId:        instance.stageId,
-    value:          instance.value,
+  upsertDocument(INDICES.LEADS, instance.id, {
+    id: instance.id,
+    userId: instance.userId,
+    contactId: instance.contactId,
+    stageId: instance.stageId,
+    value: instance.value,
     // Denormalise contact fields from metadata (populated at lead creation in service layer)
-    email:          instance.metadata?.email   || null,
-    name:           instance.metadata?.name    || null,
-    company:        instance.metadata?.company || null,
-    stageName:      instance.metadata?.stageName || null,
+    email: instance.metadata?.email || null,
+    name: instance.metadata?.name || null,
+    company: instance.metadata?.company || null,
+    stageName: instance.metadata?.stageName || null,
     lastActivityAt: instance.lastActivityAt,
-    createdAt:      instance.createdAt,
+    createdAt: instance.createdAt,
   });
 });
 
 Lead.addHook("afterUpdate", "esSyncLeadUpdate", (instance) => {
-  publishEsSync("upsert", INDICES.LEADS, instance.id, {
-    id:             instance.id,
-    userId:         instance.userId,
-    contactId:      instance.contactId,
-    stageId:        instance.stageId,
-    value:          instance.value,
-    email:          instance.metadata?.email   || null,
-    name:           instance.metadata?.name    || null,
-    company:        instance.metadata?.company || null,
-    stageName:      instance.metadata?.stageName || null,
+  upsertDocument(INDICES.LEADS, instance.id, {
+    id: instance.id,
+    userId: instance.userId,
+    contactId: instance.contactId,
+    stageId: instance.stageId,
+    value: instance.value,
+    email: instance.metadata?.email || null,
+    name: instance.metadata?.name || null,
+    company: instance.metadata?.company || null,
+    stageName: instance.metadata?.stageName || null,
     lastActivityAt: instance.lastActivityAt,
-    createdAt:      instance.createdAt,
+    createdAt: instance.createdAt,
   });
 });
 
 Lead.addHook("afterDestroy", "esSyncLeadDelete", (instance) => {
-  publishEsSync("delete", INDICES.LEADS, instance.id);
+  deleteDocument(INDICES.LEADS, instance.id);
 });
 
 // ── Campaign hooks ────────────────────────────────────────────────────────────
 Campaign.addHook("afterCreate", "esSyncCampaignCreate", (instance) => {
-  publishEsSync("upsert", INDICES.CAMPAIGNS, instance.id, {
-    id:        instance.id,
-    userId:    instance.userId,
-    name:      instance.name,
-    subject:   instance.subject,
-    textBody:  instance.textBody,
-    status:    instance.status,
+  upsertDocument(INDICES.CAMPAIGNS, instance.id, {
+    id: instance.id,
+    userId: instance.userId,
+    name: instance.name,
+    subject: instance.subject,
+    textBody: instance.textBody,
+    status: instance.status,
     createdAt: instance.createdAt,
     updatedAt: instance.updatedAt,
   });
 });
 
 Campaign.addHook("afterUpdate", "esSyncCampaignUpdate", (instance) => {
-  publishEsSync("upsert", INDICES.CAMPAIGNS, instance.id, {
-    id:        instance.id,
-    userId:    instance.userId,
-    name:      instance.name,
-    subject:   instance.subject,
-    textBody:  instance.textBody,
-    status:    instance.status,
+  upsertDocument(INDICES.CAMPAIGNS, instance.id, {
+    id: instance.id,
+    userId: instance.userId,
+    name: instance.name,
+    subject: instance.subject,
+    textBody: instance.textBody,
+    status: instance.status,
     createdAt: instance.createdAt,
     updatedAt: instance.updatedAt,
   });
 });
 
 Campaign.addHook("afterDestroy", "esSyncCampaignDelete", (instance) => {
-  publishEsSync("delete", INDICES.CAMPAIGNS, instance.id);
+  deleteDocument(INDICES.CAMPAIGNS, instance.id);
 });
 
 export {

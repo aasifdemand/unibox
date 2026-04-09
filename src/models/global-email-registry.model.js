@@ -9,6 +9,11 @@ const GlobalEmailRegistry = sequelize.define(
       defaultValue: DataTypes.UUIDV4,
       primaryKey: true,
     },
+    userId: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      comment: "Owner of the interaction. Null = Truly Global",
+    },
 
     normalizedEmail: {
       type: DataTypes.STRING,
@@ -78,7 +83,7 @@ const GlobalEmailRegistry = sequelize.define(
     tableName: "global_email_registry",
     timestamps: false,
     indexes: [
-      { unique: true, fields: ["normalizedEmail"] },
+      { unique: true, fields: ["normalizedEmail", "userId"] },
       { fields: ["verificationStatus"] },
       { fields: ["verifiedAt"] },
     ],

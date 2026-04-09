@@ -4,7 +4,9 @@ import {
   searchContacts,
   searchLeads,
   searchCampaigns,
+  reindexContacts,
 } from "../services/elasticsearch.service.js";
+import * as db from "../models/index.js";
 import AppError from "../utils/app-error.js";
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
@@ -16,12 +18,15 @@ const paginate = (query) => {
 };
 
 const respond = (res, result, page, limit) =>
-  res.success({
-    results: result.hits,
-    total:   result.total,
-    page,
-    limit,
-    pages: Math.ceil(result.total / limit),
+  res.json({
+    success: true,
+    data: {
+      results: result.hits,
+      total: result.total,
+      page,
+      limit,
+      pages: Math.ceil(result.total / limit),
+    }
   });
 
 // ─── GET /api/v1/search/messages ─────────────────────────────────────────────
@@ -96,5 +101,14 @@ export async function searchCampaignsHandler(req, res, next) {
     const { from, size, page, limit } = paginate(req.query);
     const result = await searchCampaigns({ userId, query: q, status, from, size });
     respond(res, result, page, limit);
+  } catch (err) { next(err); }
+}
+// ─── POST /api/v1/search/sync-contacts ────────────────────────────────────────
+// One-time utility to sync existing contacts to ES
+export async function syncContactsHandler(req, res, next) {
+  try {
+    const { ListUploadRecord, ListUploadBatch } = db;
+    const count = await reindexContacts(ListUploadRecord, ListUploadBatch);
+    res.json({ success: true, message: `Successfully re-indexed ${count} contacts.`, count });
   } catch (err) { next(err); }
 }

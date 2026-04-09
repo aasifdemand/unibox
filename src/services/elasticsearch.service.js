@@ -137,6 +137,12 @@ export async function initIndices() {
       if (!exists) {
         await es.indices.create({ index: name, body });
         console.log(`✅ ES index created: ${name}`);
+        
+        // Trigger one-time sync for contacts if index was just created
+        if (name === INDICES.CONTACTS) {
+          const db = await import("../models/index.js");
+          await reindexContacts(db.ListUploadRecord, db.ListUploadBatch);
+        }
       } else {
         console.log(`✔️  ES index already exists: ${name}`);
       }
@@ -299,4 +305,44 @@ export async function searchCampaigns({ userId, query, status, from = 0, size = 
     console.error("❌ ES search failed [campaigns]:", err.message);
     return { hits: [], total: 0 };
   }
+}
+// ─── Re-indexing Utility ──────────────────────────────────────────────────────
+
+/**
+ * Re-indexes all contacts for all users.
+ * Fetches batch information to correctly associate userId with each contact.
+ */
+export async function reindexContacts(ListUploadRecord, ListUploadBatch) {
+  const es = getElasticsearchClient();
+  if (!es) return 0;
+
+  console.log("🔄 Starting contact re-indexing...");
+
+  const contacts = await ListUploadRecord.findAll({
+    include: [{ model: ListUploadBatch, as: "batch", attributes: ["userId"] }],
+  });
+
+  let successCount = 0;
+  for (const contact of contacts) {
+    if (!contact.batch?.userId) continue;
+
+    await upsertDocument(INDICES.CONTACTS, contact.id, {
+      id:              contact.id,
+      userId:          contact.batch.userId,
+      batchId:         contact.batchId,
+      rawEmail:        contact.rawEmail,
+      normalizedEmail: contact.normalizedEmail,
+      domain:          contact.domain,
+      name:            contact.name,
+      status:          contact.status,
+      company:         contact.metadata?.company || null,
+      phone:           contact.metadata?.phone   || null,
+      title:           contact.metadata?.title   || null,
+      createdAt:       contact.createdAt,
+    });
+    successCount++;
+  }
+
+  console.log(`✅ Re-indexed ${successCount} contacts.`);
+  return successCount;
 }

@@ -6,6 +6,7 @@ import {
   searchContactsHandler,
   searchLeadsHandler,
   searchCampaignsHandler,
+  syncContactsHandler,
 } from "../controllers/search.controller.js";
 
 const router = express.Router();
@@ -27,5 +28,8 @@ router.get("/leads",     searchLeadsHandler);
 
 // GET /api/v1/search/campaigns  — full-text search across campaigns (name, subject, body)
 router.get("/campaigns", searchCampaignsHandler);
+
+// POST /api/v1/search/sync-contacts — one-time sync of all database contacts to ES
+router.post("/sync-contacts", syncContactsHandler);
 
 export default router;

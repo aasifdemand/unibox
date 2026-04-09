@@ -5,7 +5,7 @@ import CampaignSend from "../models/campaign-send.model.js";
 import { emitToUser } from "./event-broadcaster.js";
 
 export async function checkAllCampaignsCompletion() {
-  console.log(`[${new Date().toISOString()}] 🔍 Checking for campaigns that can be completed...`);
+  console.log(`[${new Date().toISOString()}]  Checking for campaigns that can be completed...`);
   const runningCampaigns = await Campaign.findAll({
     where: { status: { [Op.in]: ["running", "sending"] } },
   });

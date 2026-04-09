@@ -8,6 +8,7 @@ import CampaignStep from "../models/campaign-step.model.js";
 import CampaignSend from "../models/campaign-send.model.js";
 import Email from "../models/email.model.js";
 import GlobalEmailRegistry from "../models/global-email-registry.model.js";
+import SenderHealth from "../models/sender-health.model.js";
 import { getSenderWithType } from "../models/index.js";
 
 import { getRabbitChannel as getChannel } from "../queues/rabbit.js";
@@ -19,6 +20,7 @@ import crypto from "crypto";
 
 import { DateTime } from "luxon";
 import sequelize from "../config/db.js";
+import { Op } from "sequelize";
 
 function nextSendableTime(campaign) {
   const tz = campaign.timezone || "UTC";
@@ -32,11 +34,11 @@ function nextSendableTime(campaign) {
   const endMins = endH * 60 + endM;
 
   let cursor = DateTime.now().setZone(tz);
-  
+
   for (let i = 0; i < 14 * 24 * 60; i += 1) {
     const dayName = cursor.toFormat("EEEE").toLowerCase();
     const curMinutes = cursor.hour * 60 + cursor.minute;
-    
+
     let isInsideWindow = false;
     if (startMins <= endMins) {
       isInsideWindow = curMinutes >= startMins && curMinutes <= endMins;
@@ -48,10 +50,10 @@ function nextSendableTime(campaign) {
       if (i === 0) return null; // Valid right now, process immediately
       return cursor.toJSDate(); // Valid in future, schedule for then
     }
-    
+
     cursor = cursor.plus({ minutes: 1 });
   }
-  
+
   // Failsafe if no days configured properly
   return DateTime.now().setZone(tz).plus({ days: 1 }).set({ hour: startH, minute: startM }).toJSDate();
 }
@@ -109,7 +111,13 @@ async function startWorker() {
           }
 
           const globalRegistry = await GlobalEmailRegistry.findOne({
-            where: { normalizedEmail: recipient.email.toLowerCase() },
+            where: {
+              normalizedEmail: recipient.email.toLowerCase(),
+              [Op.or]: [
+                { userId: campaign.userId },
+                { userId: null }
+              ]
+            },
             transaction: t
           });
 
@@ -155,9 +163,36 @@ async function startWorker() {
             return channel.ack(msg);
           }
 
-          let senderIdToUse = campaign.senderId;
-          if (campaign.senderIds?.length > 0) senderIdToUse = campaign.senderIds[Math.floor(Math.random() * campaign.senderIds.length)];
-          const sender = await getSenderWithType(senderIdToUse, campaign.senderType);
+          // --- SENDER SELECTION & HEALTH VALIDATION ---
+          let senderIdToUse = null;
+          let sender = null;
+          const candidateIds = campaign.senderIds && campaign.senderIds.length > 0
+            ? [...campaign.senderIds].sort(() => Math.random() - 0.5) // Shuffle for rotation
+            : [campaign.senderId].filter(id => id != null);
+
+          for (const sId of candidateIds) {
+            const candidateSender = await getSenderWithType(sId, campaign.senderType);
+            if (!candidateSender || !candidateSender.isVerified || !candidateSender.isActive) continue;
+
+            const health = await SenderHealth.findOne({ where: { mailboxId: sId } });
+            if (health?.blacklisted) continue;
+
+            // Found a healthy sender!
+            senderIdToUse = sId;
+            sender = candidateSender;
+            break;
+          }
+
+          if (!sender) {
+            log("WARN", "🚨 No healthy senders available. Auto-pausing campaign.", { campaignId });
+            await campaign.update({
+              status: "paused",
+              pauseReason: "Auto-paused: No verified or healthy mailboxes available."
+            }, { transaction: t });
+            await t.commit();
+            return channel.ack(msg);
+          }
+          // --------------------------------------------
 
           const [send, created] = await CampaignSend.findOrCreate({
             where: { campaignId, recipientId, step },

@@ -1,6 +1,10 @@
 import { Integration } from "../models/index.js";
 import { getValidOAuthToken } from "./integration.service.js";
 import fetch from "node-fetch";
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL);
+const SYNC_DEBOUNCE_SEC = 300; // 5 minutes
 
 /**
  * Pushes a contact to HubSpot using the user's stored Private App Token.
@@ -40,10 +44,10 @@ const syncToHubSpot = async (apiKey, email, event, properties) => {
         });
       }
     }
-    return true;
+    return { success: true };
   } catch (error) {
     console.error("HubSpot Sync Exception:", error.message);
-    return false;
+    return { success: false, error: error.message };
   }
 };
 
@@ -87,10 +91,10 @@ const syncToSalesforce = async (token, instanceUrl, email, event, properties) =>
       });
       if (!updateRes.ok) console.error("Salesforce Update Error:", await updateRes.text());
     }
-    return true;
+    return { success: true };
   } catch (error) {
     console.error("Salesforce Sync Exception:", error.message);
-    return false;
+    return { success: false, error: error.message };
   }
 };
 
@@ -112,25 +116,49 @@ export const syncLeadToAllCRMs = async (userId, email, event, customPayload = {}
        ...customPayload
     };
 
-    // Process all connections in parallel
+// Process all connections in parallel
     const promises = activeIntegrations.map(async (int) => {
        try {
+         // --- DEBOUNCE LOGIC ---
+         const debounceKey = `sync_debounce:${userId}:${int.id}:${email}`;
+         const isDebounced = await redis.get(debounceKey);
+         if (isDebounced) {
+           console.log(`⏳ Sync to ${int.service} debounced for ${email}`);
+           return;
+         }
+         // -----------------------
+
          // Get valid OAuth token (handles refreshing automatically)
          const token = await getValidOAuthToken(userId, int.service);
-         if (!token) return;
+         if (!token) throw new Error("Could not retrieve valid OAuth token.");
 
-         let success = false;
+         let result = { success: false };
          if (int.service === "hubspot") {
-            success = await syncToHubSpot(token, email, event, properties);
+            result = await syncToHubSpot(token, email, event, properties);
          } else if (int.service === "salesforce" && int.credentials.instanceUrl) {
-            success = await syncToSalesforce(token, int.credentials.instanceUrl, email, event, properties);
+            result = await syncToSalesforce(token, int.credentials.instanceUrl, email, event, properties);
          }
          
-         if (success) {
-            await int.update({ lastSyncAt: new Date() });
+         if (result.success) {
+            await int.update({ 
+               lastSyncAt: new Date(), 
+               syncStatus: "healthy",
+               lastError: null
+            });
+            // Set debounce after successful sync
+            await redis.set(debounceKey, "1", "EX", SYNC_DEBOUNCE_SEC);
+         } else {
+            await int.update({ 
+               syncStatus: "error",
+               lastError: result.error || "Unknown synchronization error"
+            });
          }
        } catch (err) {
          console.error(`Error syncing to ${int.service} for user ${userId}:`, err.message);
+         await int.update({ 
+           syncStatus: "error",
+           lastError: err.message
+         });
        }
     });
 

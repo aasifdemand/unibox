@@ -372,7 +372,10 @@ const processUploadedFile = async (batchId) => {
       // Step 2: Deduplicate against Global Registry
       const uniqueEmails = Array.from(uniqueEmailsInBatch);
       const existingEntries = await GlobalEmailRegistry.findAll({
-        where: { normalizedEmail: uniqueEmails },
+        where: { 
+          normalizedEmail: uniqueEmails,
+          userId: batch.userId
+        },
         attributes: ["normalizedEmail"],
         transaction: t
       });
@@ -399,6 +402,7 @@ const processUploadedFile = async (batchId) => {
         if (isNew) {
           registryToCreate.push({
             normalizedEmail: record.normalizedEmail,
+            userId: batch.userId,
             domain: record.domain,
             emailProvider: getEmailProvider(record.domain),
             firstSeenAt: new Date(),

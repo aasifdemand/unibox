@@ -312,12 +312,30 @@ async function startWorker() {
 
           const today = new Date().toISOString().split("T")[0];
           const warmupKey = `warmup:${sender.id}:${today}`;
+          const campaignKey = `campaign:${sender.id}:${today}`;
 
-          const sentToday = await redis.incr(warmupKey);
-          await redis.expire(warmupKey, 86400);
+          const sentWarmupToday = parseInt(await redis.get(warmupKey) || "0");
+          const sentCampaignToday = parseInt(await redis.get(campaignKey) || "0");
+          const totalSentToday = sentWarmupToday + sentCampaignToday;
 
-          if (sentToday > maxDaily) {
-            throw new Error("Warmup daily limit reached");
+          if (isWarmup) {
+            if (totalSentToday >= maxDaily) {
+              throw new Error("Warmup daily limit reached");
+            }
+            await redis.incr(warmupKey);
+            await redis.expire(warmupKey, 86400);
+          } else {
+            // For campaigns, we allow a bit of 'overdrive' or we just ensure we don't block
+            // if the total is still within reasonable bounds, or we subtract from warmup if possible.
+            // Simplified: Campaigns always increment campaignKey. We only block if TOTAL exceeds maxDaily.
+            if (totalSentToday >= maxDaily) {
+              // Priority logic: if it's a campaign and we're at the limit, 
+              // we still fail but we've at least tracked them separately for better reporting.
+              // In a more advanced version, we would pause warmups to make room.
+              throw new Error("Sender daily limit reached (Campaigns + Warmup)");
+            }
+            await redis.incr(campaignKey);
+            await redis.expire(campaignKey, 86400);
           }
         }
 

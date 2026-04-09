@@ -69,8 +69,11 @@ export const syncLead = async (userId, email, event, category = 'replied') => {
         metadata: { ...lead.metadata, lastIntent: category }
       };
 
-      // If the current stage is "earlier" than the new stage, move it
-      if (!currentStage || currentStage.position < stage.position) {
+      // Terminal Intents (Negative/Interested/Replied categories) often override position
+      // We allow leads to move "backwards" or into specific intent stages if explicitly mapped
+      const isTerminalIntent = ["interested", "not_interested", "out_of_office", "wrong_person"].includes(category);
+
+      if (!currentStage || currentStage.position < stage.position || isTerminalIntent) {
         updates.stageId = stage.id;
       }
       
