@@ -62,6 +62,16 @@ const GlobalEmailRegistry = sequelize.define(
       allowNull: true,
     },
 
+    blacklisted: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+    },
+
+    blacklistedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+
     lastSeenAt: DataTypes.DATE,
   },
   {

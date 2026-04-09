@@ -631,8 +631,12 @@ export const getBatchStatus = asyncHandler(async (req, res) => {
         model: GlobalEmailRegistry,
         attributes: [
           "verificationStatus",
-          "verifiedAt", // Changed from lastVerifiedAt
-          "verificationMeta", // Use verificationMeta instead of reason
+          "verifiedAt",
+          "verificationMeta",
+          "unsubscribed",
+          "blacklisted",
+          "unsubscribedAt",
+          "blacklistedAt",
         ],
       },
     ],
@@ -664,7 +668,7 @@ export const getBatchStatus = asyncHandler(async (req, res) => {
       include: [
         {
           model: GlobalEmailRegistry,
-          attributes: ["verificationStatus", "verifiedAt", "verificationMeta"],
+          attributes: ["verificationStatus", "verifiedAt", "verificationMeta", "unsubscribed", "blacklisted", "unsubscribedAt", "blacklistedAt"],
         },
       ],
       attributes: [
@@ -693,6 +697,10 @@ export const getBatchStatus = asyncHandler(async (req, res) => {
     verificationStatus: record.GlobalEmailRegistry?.verificationStatus,
     verifiedAt: record.GlobalEmailRegistry?.verifiedAt,
     verificationReason: record.GlobalEmailRegistry?.verificationMeta,
+    unsubscribed: record.GlobalEmailRegistry?.unsubscribed,
+    blacklisted: record.GlobalEmailRegistry?.blacklisted,
+    unsubscribedAt: record.GlobalEmailRegistry?.unsubscribedAt,
+    blacklistedAt: record.GlobalEmailRegistry?.blacklistedAt,
     createdAt: record.createdAt,
   }));
 
@@ -707,6 +715,10 @@ export const getBatchStatus = asyncHandler(async (req, res) => {
     verificationStatus: record.GlobalEmailRegistry?.verificationStatus,
     verifiedAt: record.GlobalEmailRegistry?.verifiedAt,
     verificationReason: record.GlobalEmailRegistry?.verificationMeta,
+    unsubscribed: record.GlobalEmailRegistry?.unsubscribed,
+    blacklisted: record.GlobalEmailRegistry?.blacklisted,
+    unsubscribedAt: record.GlobalEmailRegistry?.unsubscribedAt,
+    blacklistedAt: record.GlobalEmailRegistry?.blacklistedAt,
     createdAt: record.createdAt,
   }));
 
@@ -960,25 +972,41 @@ export const exportBatch = asyncHandler(async (req, res) => {
 
   const records = await ListUploadRecord.findAll({
     where: { batchId },
+    include: [
+      {
+        model: GlobalEmailRegistry,
+        attributes: ["verificationStatus", "unsubscribed", "blacklisted"],
+      },
+    ],
     attributes: ["normalizedEmail", "name", "status", "createdAt"],
   });
+
+  const mappedRecords = records.map((r) => ({
+    email: r.normalizedEmail,
+    name: r.name,
+    status: r.status,
+    verificationStatus: r.GlobalEmailRegistry?.verificationStatus || 'unverified',
+    unsubscribed: r.GlobalEmailRegistry?.unsubscribed || false,
+    blacklisted: r.GlobalEmailRegistry?.blacklisted || false,
+    createdAt: r.createdAt
+  }));
 
   // Convert to requested format
   let content, contentType, extension;
 
   switch (format.toLowerCase()) {
     case "csv":
-      content = convertToCSV(records);
+      content = convertToCSV(mappedRecords);
       contentType = "text/csv";
       extension = "csv";
       break;
     case "json":
-      content = JSON.stringify(records, null, 2);
+      content = JSON.stringify(mappedRecords, null, 2);
       contentType = "application/json";
       extension = "json";
       break;
     case "xlsx":
-      content = convertToXLSX(records);
+      content = convertToXLSX(mappedRecords);
       contentType =
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
       extension = "xlsx";
@@ -1047,7 +1075,7 @@ export const exportAllUserContacts = asyncHandler(async (req, res) => {
         model: GlobalEmailRegistry,
         where: Object.keys(registryWhere).length > 0 ? registryWhere : undefined,
         required: Object.keys(registryWhere).length > 0,
-        attributes: ["verificationStatus", "verifiedAt", "verificationMeta"],
+        attributes: ["verificationStatus", "verifiedAt", "verificationMeta", "unsubscribed", "blacklisted", "unsubscribedAt", "blacklistedAt"],
       },
     ],
     attributes: [
@@ -1067,6 +1095,8 @@ export const exportAllUserContacts = asyncHandler(async (req, res) => {
       name: r.name,
       status: r.status,
       verificationStatus: r.GlobalEmailRegistry?.verificationStatus || 'unverified',
+      unsubscribed: r.GlobalEmailRegistry?.unsubscribed || false,
+      blacklisted: r.GlobalEmailRegistry?.blacklisted || false,
       createdAt: r.createdAt
     };
     // Flatten metadata
@@ -1165,7 +1195,7 @@ export const getAllUserContacts = asyncHandler(async (req, res) => {
         model: GlobalEmailRegistry,
         where: Object.keys(registryWhere).length > 0 ? registryWhere : undefined,
         required: Object.keys(registryWhere).length > 0, // Only inner join if filtering by status
-        attributes: ["verificationStatus", "verifiedAt", "verificationMeta"],
+        attributes: ["verificationStatus", "verifiedAt", "verificationMeta", "unsubscribed", "blacklisted", "unsubscribedAt", "blacklistedAt"],
       },
     ],
     attributes: [
@@ -1201,6 +1231,10 @@ export const getAllUserContacts = asyncHandler(async (req, res) => {
     verificationStatus: record.GlobalEmailRegistry?.verificationStatus,
     verifiedAt: record.GlobalEmailRegistry?.verifiedAt,
     verificationReason: record.GlobalEmailRegistry?.verificationMeta,
+    unsubscribed: record.GlobalEmailRegistry?.unsubscribed,
+    blacklisted: record.GlobalEmailRegistry?.blacklisted,
+    unsubscribedAt: record.GlobalEmailRegistry?.unsubscribedAt,
+    blacklistedAt: record.GlobalEmailRegistry?.blacklistedAt,
     createdAt: record.createdAt,
   }));
 
