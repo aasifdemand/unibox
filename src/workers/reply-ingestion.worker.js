@@ -23,7 +23,6 @@ import { refreshGoogleToken } from "../utils/refresh-google-token.js";
 import { tryCompleteCampaign } from "../utils/campaign-completion.checker.js";
 import { createImapConnection } from "../utils/imap-helper.js";
 import { syncLead } from "../services/crm-sync.service.js";
-import { syncLeadToAllCRMs } from "../services/crm-sync.provider.js";
 import { getProxyForEmail } from "../utils/proxy-resolver.js";
 import { QUEUES } from "../queues/queues.js";
 import { getRabbitChannel } from "../queues/rabbit.js";
@@ -136,9 +135,17 @@ async function processReply({ sender, email, reply }) {
         log("ERROR", "Failed to sync lead to CRM on reply", { error: e.message })
       );
 
-      syncLeadToAllCRMs(campaignData.userId, email.recipientEmail, "replied", {
+      const properties = {
         recent_reply_body: reply.bodySnipped || reply.body
-      }).catch(e => log("ERROR", "Failed to sync lead to external CRM on reply", { error: e.message }));
+      };
+
+      await channel.assertQueue(QUEUES.CRM_SYNC, { durable: true });
+      channel.sendToQueue(QUEUES.CRM_SYNC, Buffer.from(JSON.stringify({
+        userId: campaignData.userId,
+        email: email.recipientEmail,
+        event: "replied",
+        customPayload: properties
+      })), { persistent: true });
     }
 
     const campaign = await Campaign.findByPk(email.campaignId, { attributes: ['userId', 'name'] });

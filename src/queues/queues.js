@@ -9,5 +9,7 @@ export const QUEUES = {
   ES_SYNC: "es.sync",
   WARMUP_RESCUE: "warmup.rescue",
   WARMUP_SEND: "warmup.send",
+  AI_CLASSIFY: "ai.classify",
+  CRM_SYNC: "crm.sync",
 };
 

@@ -9,7 +9,6 @@ import { getRabbitChannel as getChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
 import { classifyIntent } from "../services/ai.service.js";
 import { syncLead } from "../services/crm-sync.service.js";
-import { syncLeadToAllCRMs } from "../services/crm-sync.provider.js";
 
 const log = (level, message, meta = {}) =>
   console.log(
@@ -58,11 +57,20 @@ async function startWorker() {
            // Internal CRM
            await syncLead(campaign.userId, replyEvent.replyFrom, "replied", intent).catch(() => {});
            
-           // External CRMs
-           await syncLeadToAllCRMs(campaign.userId, replyEvent.replyFrom, "replied", {
+        // 3. Enqueue CRM Sync (Async to avoid rate limits)
+        const channel = await getChannel();
+        await channel.assertQueue(QUEUES.CRM_SYNC, { durable: true });
+        channel.sendToQueue(QUEUES.CRM_SYNC, Buffer.from(JSON.stringify({
+           userId: campaign.userId,
+           email: replyEvent.replyFrom,
+           event: "replied",
+           customPayload: {
              custom_intent: intent,
              recent_reply_body: body
-           }).catch(() => {});
+           }
+        })), { persistent: true });
+        
+        log("DEBUG", "📤 Enqueued CRM sync task", { replyEventId });
         }
 
         log("INFO", "✅ AI Classification complete", { replyEventId, intent });

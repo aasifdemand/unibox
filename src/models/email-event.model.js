@@ -14,6 +14,10 @@ const EmailEvent = sequelize.define(
     tableName: "email_events",
     timestamps: true,
     updatedAt: false,
+    indexes: [
+      { fields: ["emailId", "eventType"] },
+      { fields: ["createdAt"] }
+    ]
   }
 );
 

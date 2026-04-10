@@ -21,6 +21,7 @@
     "es-sync": "node src/workers/elasticsearch-sync.worker.js",
     "ai-classifier": "node src/workers/ai-classifier.worker.js",
     "maintenance": "node src/workers/maintenance.worker.js",
+    "crm-sync": "node src/workers/crm-sync.worker.js",
     "lint": "eslint . --max-warnings=0",
     "lint:fix": "eslint . --fix"
   },
