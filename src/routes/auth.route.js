@@ -14,7 +14,6 @@ import {
   verifyAccount,
   refreshToken,
 } from "../controllers/auth.controller.js";
-import { validateTurnstile } from "../middlewares/turnstile.middleware.js";
 
 const router = Router();
 
@@ -56,7 +55,7 @@ const router = Router();
  *       201:
  *         description: Signup successful
  */
-router.post("/signup", validateTurnstile, signup);
+router.post("/signup", signup);
 
 /**
  * @swagger
@@ -83,7 +82,7 @@ router.post("/signup", validateTurnstile, signup);
  *       200:
  *         description: Login successful
  */
-router.post("/login", validateTurnstile, login);
+router.post("/login", login);
 
 /**
  * @swagger
@@ -138,7 +137,7 @@ router.post("/refresh-token", refreshToken);
  *       200:
  *         description: OTP sent successfully
  */
-router.post("/forgot-password", validateTurnstile, forgotPassword);
+router.post("/forgot-password", forgotPassword);
 
 /**
  * @swagger
@@ -167,7 +166,7 @@ router.post("/forgot-password", validateTurnstile, forgotPassword);
  *       200:
  *         description: Password reset successful
  */
-router.post("/reset-password", validateTurnstile, resetPassword);
+router.post("/reset-password", resetPassword);
 
 // =========================
 // USER OAUTH (NOT FOR SENDERS)
@@ -336,6 +335,6 @@ router.post("/verify-account", verifyAccount);
  *       200:
  *         description: OTP resent successfully
  */
-router.post("/resend-verification", validateTurnstile, resendVerification);
+router.post("/resend-verification", resendVerification);
 
 export default router;

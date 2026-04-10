@@ -69,6 +69,14 @@ const MailboxMessage = sequelize.define(
       type: DataTypes.INTEGER,
       allowNull: true,
     },
+    isLead: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+    },
+    isNoise: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+    },
   },
   {
     tableName: "mailbox_messages",

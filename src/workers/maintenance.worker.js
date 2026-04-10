@@ -7,6 +7,7 @@ import { Op } from "sequelize";
 import Email from "../models/email.model.js";
 import ReplyEvent from "../models/reply-event.model.js";
 import BounceEvent from "../models/bounce-event.model.js";
+import MailboxMessage from "../models/mailbox-message.model.js";
 
 const log = (level, message, meta = {}) =>
   console.log(
@@ -30,7 +31,10 @@ async function purgeOldRecords() {
   const models = [
     { name: "Email", model: Email, dateField: "createdAt" },
     { name: "ReplyEvent", model: ReplyEvent, dateField: "createdAt" },
-    { name: "BounceEvent", model: BounceEvent, dateField: "createdAt" }
+    { name: "BounceEvent", model: BounceEvent, dateField: "createdAt" },
+    { name: "MailboxMessage (Noise)", model: MailboxMessage, dateField: "createdAt", where: { isNoise: true }, retention: 2 },
+    { name: "MailboxMessage (General)", model: MailboxMessage, dateField: "createdAt", where: { isLead: false, isNoise: false }, retention: 30 },
+    { name: "MailboxMessage (Leads)", model: MailboxMessage, dateField: "createdAt", where: { isLead: true }, retention: 90 }
   ];
 
   for (const m of models) {
@@ -39,9 +43,14 @@ async function purgeOldRecords() {
 
     try {
       while (deletedInBatch > 0) {
+        const currentThreshold = m.retention 
+          ? DateTime.now().minus({ days: m.retention }).toJSDate() 
+          : threshold;
+
         deletedInBatch = await m.model.destroy({
           where: {
-            [m.dateField]: { [Op.lt]: threshold }
+            ...(m.where || {}),
+            [m.dateField]: { [Op.lt]: currentThreshold }
           },
           limit: PURGE_BATCH_SIZE
         });

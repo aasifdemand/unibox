@@ -8,6 +8,7 @@ import { createImapConnection, flattenBoxes } from "../utils/imap-helper.js";
 import { simpleParser } from "mailparser";
 import util from "util";
 import { DateTime } from "luxon";
+import { ListUploadRecord } from "../models/index.js";
 
 /**
  * MailboxSyncService
@@ -190,11 +191,15 @@ class MailboxSyncService {
     oauth2Client.setCredentials({ access_token: tokenData.accessToken });
     const gmail = google.gmail({ version: "v1", auth: oauth2Client });
 
+    // Focus strictly on the last 30 days for background sync
+    const thirtyDaysAgo = DateTime.now().minus({ days: 30 }).toISODate();
+
     // Fetch message list for this label
     const response = await gmail.users.messages.list({
       userId: "me",
       labelIds: [folder.providerFolderId],
-      maxResults: 50, // Initial sync limit
+      q: `after:${thirtyDaysAgo}`,
+      maxResults: 50, 
     });
 
     const messages = response.data.messages || [];
@@ -211,6 +216,9 @@ class MailboxSyncService {
         const headers = {};
         (full.data.payload?.headers || []).forEach(h => { headers[h.name] = h.value; });
 
+        const fromEmail = headers["From"] || "";
+        const isLead = await this.checkIfLead(fromEmail);
+
         await MailboxMessage.upsert({
           senderId: sender.id,
           senderType: 'gmail',
@@ -218,11 +226,13 @@ class MailboxSyncService {
           providerMessageId: msg.id,
           providerThreadId: full.data.threadId,
           subject: headers["Subject"] || "",
-          from: headers["From"] || "",
+          from: fromEmail,
           to: headers["To"] || "",
           date: headers["Date"] ? DateTime.fromRFC2822(headers["Date"]).toJSDate() : DateTime.now().toJSDate(),
           snippet: full.data.snippet || "",
           isRead: !full.data.labelIds?.includes("UNREAD"),
+          isLead: isLead,
+          isNoise: !isLead && ['spam', 'trash'].includes(folder.folderType)
         });
       } catch (err) {
         console.error(`[MailboxSync] Error syncing Gmail message ${msg.id}:`, err.message);
@@ -282,9 +292,10 @@ class MailboxSyncService {
     const token = await getValidMicrosoftToken(sender);
     if (!token) return;
 
-    let nextLink = `https://graph.microsoft.com/v1.0/me/mailFolders/${folder.providerFolderId}/messages?$top=50&$select=id,subject,from,toRecipients,receivedDateTime,isRead,bodyPreview,conversationId`;
+    const thirtyDaysAgo = DateTime.now().minus({ days: 30 }).toISO();
+    let nextLink = `https://graph.microsoft.com/v1.0/me/mailFolders/${folder.providerFolderId}/messages?$top=50&$select=id,subject,from,toRecipients,receivedDateTime,isRead,bodyPreview,conversationId&$filter=receivedDateTime ge ${thirtyDaysAgo}`;
     let processedCount = 0;
-    const MAX_SYNC = 500; // Limit per sync pass
+    const MAX_SYNC = 100; // Tighter limit for scale
 
     while (nextLink && processedCount < MAX_SYNC) {
       const response = await axios.get(nextLink, {
@@ -293,6 +304,9 @@ class MailboxSyncService {
 
       const messages = response.data.value || [];
       for (const msg of messages) {
+        const fromEmail = msg.from?.emailAddress?.address || "";
+        const isLead = await this.checkIfLead(fromEmail);
+
         await MailboxMessage.upsert({
           senderId: sender.id,
           senderType: 'outlook',
@@ -300,11 +314,13 @@ class MailboxSyncService {
           providerMessageId: msg.id,
           providerThreadId: msg.conversationId,
           subject: msg.subject || "",
-          from: msg.from?.emailAddress?.address || "",
+          from: fromEmail,
           to: msg.toRecipients?.map(r => r.emailAddress?.address).join(", ") || "",
           date: DateTime.fromISO(msg.receivedDateTime).toJSDate(),
           snippet: msg.bodyPreview || "",
           isRead: msg.isRead,
+          isLead: isLead,
+          isNoise: !isLead && ['spam', 'trash'].includes(folder.folderType)
         });
         processedCount++;
       }
@@ -364,9 +380,19 @@ class MailboxSyncService {
           return resolve();
         }
 
-        // Fetch last 50 messages
-        const start = Math.max(1, total - 49);
-        const f = imap.seq.fetch(`${start}:${total}`, { bodies: 'HEADER.FIELDS (FROM TO SUBJECT DATE)' });
+        // Fetch messages from last 30 days
+        const thirtyDaysAgo = DateTime.now().minus({ days: 30 }).toJSDate();
+        
+        // IMAP SEARCH SINCE expects an actual date object
+        imap.search([['SINCE', thirtyDaysAgo]], (err, results) => {
+          if (err || !results || results.length === 0) {
+            imap.end();
+            return resolve();
+          }
+
+          // Fetch only the latest 50 within this search window
+          const latest = results.slice(-50);
+          const f = imap.fetch(latest, { bodies: 'HEADER.FIELDS (FROM TO SUBJECT DATE)' });
 
         f.on('message', (msg, seqno) => {
           let attributes;
@@ -376,18 +402,22 @@ class MailboxSyncService {
             stream.once('end', async () => {
               try {
                 const parsed = await simpleParser(buffer);
-                
+                const fromEmail = parsed.from?.text || "";
+                const isLead = await this.checkIfLead(fromEmail);
+
                 await MailboxMessage.upsert({
                   senderId: sender.id,
                   senderType: 'smtp',
                   folderId: folder.id,
                   providerMessageId: `imap-${sender.id}-${attributes?.uid || seqno}`,
                   subject: parsed.subject || "",
-                  from: parsed.from?.text || "",
+                  from: fromEmail,
                   to: parsed.to?.text || "",
                   date: parsed.date ? DateTime.fromJSDate(parsed.date).toJSDate() : DateTime.now().toJSDate(),
                   snippet: "",
                   isRead: (attributes?.flags || []).includes('\\Seen'),
+                  isLead: isLead,
+                  isNoise: !isLead && ['spam', 'trash'].includes(folder.folderType)
                 });
               } catch (parseErr) {
                 console.error("[MailboxSync] IMAP parse error:", parseErr.message);
@@ -397,12 +427,15 @@ class MailboxSyncService {
           msg.once('attributes', (attrs) => { attributes = attrs; });
         });
 
-        f.once('error', (err) => {
+        });
+
+        // Close on finish
+        imap.once('error', (err) => {
           imap.end();
           reject(err);
         });
 
-        f.once('end', () => {
+        imap.once('end', () => {
           imap.end();
           resolve();
         });
@@ -450,6 +483,26 @@ class MailboxSyncService {
     if (n.includes('important')) return 'important';
     if (n.includes('starred')) return 'starred';
     return 'custom';
+  }
+
+  /**
+   * Checks if an email is from a known lead/prospect
+   */
+  async checkIfLead(email) {
+    if (!email) return false;
+    try {
+      // Extract clean email from "Name <email@example.com>"
+      const match = email.match(/<([^>]+)>/) || [null, email];
+      const cleanEmail = (match[1] || email).trim().toLowerCase();
+      
+      const lead = await ListUploadRecord.findOne({
+        where: { normalizedEmail: cleanEmail }
+      });
+      return !!lead;
+    } catch (err) {
+      console.error(`[MailboxSync] Lead check failed for ${email}:`, err.message);
+      return false;
+    }
   }
 }
 
