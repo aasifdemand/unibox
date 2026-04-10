@@ -4,10 +4,10 @@ import getElasticsearchClient from "../config/elasticsearch.js";
 // Prefixed with "unibox_" to avoid conflicts with other apps on the shared ES cluster
 
 export const INDICES = {
-  MESSAGES:  "unibox_mailbox_messages",
-  EMAILS:    "unibox_campaign_emails",
-  CONTACTS:  "unibox_contacts",
-  LEADS:     "unibox_leads",
+  MESSAGES: "unibox_mailbox_messages",
+  EMAILS: "unibox_campaign_emails",
+  CONTACTS: "unibox_contacts",
+  LEADS: "unibox_leads",
   CAMPAIGNS: "unibox_campaigns",
 };
 
@@ -19,21 +19,21 @@ const MESSAGE_MAPPING = {
   settings: SETTINGS,
   mappings: {
     properties: {
-      id:                { type: "keyword" },
-      userId:            { type: "keyword" },
-      senderId:          { type: "keyword" },
-      senderType:        { type: "keyword" },
-      folderId:          { type: "keyword" },
+      id: { type: "keyword" },
+      userId: { type: "keyword" },
+      senderId: { type: "keyword" },
+      senderType: { type: "keyword" },
+      folderId: { type: "keyword" },
       providerMessageId: { type: "keyword" },
-      providerThreadId:  { type: "keyword" },
-      subject:           { type: "text", analyzer: "english" },
-      from:              { type: "text", fields: { keyword: { type: "keyword" } } },
-      to:                { type: "text", fields: { keyword: { type: "keyword" } } },
-      snippet:           { type: "text", analyzer: "english" },
-      isRead:            { type: "boolean" },
-      hasAttachments:    { type: "boolean" },
-      date:              { type: "date" },
-      createdAt:         { type: "date" },
+      providerThreadId: { type: "keyword" },
+      subject: { type: "text", analyzer: "english" },
+      from: { type: "text", fields: { keyword: { type: "keyword" } } },
+      to: { type: "text", fields: { keyword: { type: "keyword" } } },
+      snippet: { type: "text", analyzer: "english" },
+      isRead: { type: "boolean" },
+      hasAttachments: { type: "boolean" },
+      date: { type: "date" },
+      createdAt: { type: "date" },
     },
   },
 };
@@ -42,20 +42,20 @@ const EMAIL_MAPPING = {
   settings: SETTINGS,
   mappings: {
     properties: {
-      id:             { type: "keyword" },
-      userId:         { type: "keyword" },
-      campaignId:     { type: "keyword" },
-      senderId:       { type: "keyword" },
-      senderType:     { type: "keyword" },
+      id: { type: "keyword" },
+      userId: { type: "keyword" },
+      campaignId: { type: "keyword" },
+      senderId: { type: "keyword" },
+      senderType: { type: "keyword" },
       recipientEmail: { type: "keyword" },
-      subject:        { type: "text", analyzer: "english" },
-      textBody:       { type: "text", analyzer: "english" },
-      status:         { type: "keyword" },
-      sentAt:         { type: "date" },
-      openedAt:       { type: "date" },
-      clickedAt:      { type: "date" },
-      repliedAt:      { type: "date" },
-      createdAt:      { type: "date" },
+      subject: { type: "text", analyzer: "english" },
+      textBody: { type: "text", analyzer: "english" },
+      status: { type: "keyword" },
+      sentAt: { type: "date" },
+      openedAt: { type: "date" },
+      clickedAt: { type: "date" },
+      repliedAt: { type: "date" },
+      createdAt: { type: "date" },
     },
   },
 };
@@ -64,19 +64,19 @@ const CONTACT_MAPPING = {
   settings: SETTINGS,
   mappings: {
     properties: {
-      id:              { type: "keyword" },
-      userId:          { type: "keyword" },
-      batchId:         { type: "keyword" },
-      rawEmail:        { type: "keyword" },
+      id: { type: "keyword" },
+      userId: { type: "keyword" },
+      batchId: { type: "keyword" },
+      rawEmail: { type: "keyword" },
       normalizedEmail: { type: "keyword" },
-      domain:          { type: "keyword" },
-      name:            { type: "text", fields: { keyword: { type: "keyword" } } },
-      status:          { type: "keyword" },
+      domain: { type: "keyword" },
+      name: { type: "text", fields: { keyword: { type: "keyword" } } },
+      status: { type: "keyword" },
       // metadata fields flattened at index time for easy search
-      company:         { type: "text", fields: { keyword: { type: "keyword" } } },
-      phone:           { type: "keyword" },
-      title:           { type: "text" },
-      createdAt:       { type: "date" },
+      company: { type: "text", fields: { keyword: { type: "keyword" } } },
+      phone: { type: "keyword" },
+      title: { type: "text" },
+      createdAt: { type: "date" },
     },
   },
 };
@@ -85,18 +85,18 @@ const LEAD_MAPPING = {
   settings: SETTINGS,
   mappings: {
     properties: {
-      id:             { type: "keyword" },
-      userId:         { type: "keyword" },
-      contactId:      { type: "keyword" },
-      stageId:        { type: "keyword" },
-      stageName:      { type: "keyword" },
-      value:          { type: "float" },
+      id: { type: "keyword" },
+      userId: { type: "keyword" },
+      contactId: { type: "keyword" },
+      stageId: { type: "keyword" },
+      stageName: { type: "keyword" },
+      value: { type: "float" },
       // denormalised from contact for fast search
-      email:          { type: "keyword" },
-      name:           { type: "text", fields: { keyword: { type: "keyword" } } },
-      company:        { type: "text", fields: { keyword: { type: "keyword" } } },
+      email: { type: "keyword" },
+      name: { type: "text", fields: { keyword: { type: "keyword" } } },
+      company: { type: "text", fields: { keyword: { type: "keyword" } } },
       lastActivityAt: { type: "date" },
-      createdAt:      { type: "date" },
+      createdAt: { type: "date" },
     },
   },
 };
@@ -105,12 +105,12 @@ const CAMPAIGN_MAPPING = {
   settings: SETTINGS,
   mappings: {
     properties: {
-      id:        { type: "keyword" },
-      userId:    { type: "keyword" },
-      name:      { type: "text", analyzer: "english", fields: { keyword: { type: "keyword" } } },
-      subject:   { type: "text", analyzer: "english" },
-      textBody:  { type: "text", analyzer: "english" },
-      status:    { type: "keyword" },
+      id: { type: "keyword" },
+      userId: { type: "keyword" },
+      name: { type: "text", analyzer: "english", fields: { keyword: { type: "keyword" } } },
+      subject: { type: "text", analyzer: "english" },
+      textBody: { type: "text", analyzer: "english" },
+      status: { type: "keyword" },
       createdAt: { type: "date" },
       updatedAt: { type: "date" },
     },
@@ -124,10 +124,10 @@ export async function initIndices() {
   if (!es) return;
 
   const indices = [
-    { name: INDICES.MESSAGES,  body: MESSAGE_MAPPING  },
-    { name: INDICES.EMAILS,    body: EMAIL_MAPPING    },
-    { name: INDICES.CONTACTS,  body: CONTACT_MAPPING  },
-    { name: INDICES.LEADS,     body: LEAD_MAPPING     },
+    { name: INDICES.MESSAGES, body: MESSAGE_MAPPING },
+    { name: INDICES.EMAILS, body: EMAIL_MAPPING },
+    { name: INDICES.CONTACTS, body: CONTACT_MAPPING },
+    { name: INDICES.LEADS, body: LEAD_MAPPING },
     { name: INDICES.CAMPAIGNS, body: CAMPAIGN_MAPPING },
   ];
 
@@ -137,7 +137,7 @@ export async function initIndices() {
       if (!exists) {
         await es.indices.create({ index: name, body });
         console.log(`✅ ES index created: ${name}`);
-        
+
         // Trigger one-time sync for contacts if index was just created
         if (name === INDICES.CONTACTS) {
           const db = await import("../models/index.js");
@@ -166,7 +166,9 @@ export async function upsertDocument(index, id, doc) {
   const es = getElasticsearchClient();
   if (!es) return;
   try {
-    await es.index({ index, id, body: doc, refresh: true });
+    // Removed refresh: true for better performance at scale. 
+    // ES will refresh automatically every 1s.
+    await es.index({ index, id, body: doc });
   } catch (err) {
     console.error(`❌ ES upsert failed [${index}/${id}]:`, err.message);
   }
@@ -176,11 +178,43 @@ export async function deleteDocument(index, id) {
   const es = getElasticsearchClient();
   if (!es) return;
   try {
-    await es.delete({ index, id, refresh: true });
+    await es.delete({ index, id });
   } catch (err) {
     if (err.meta?.statusCode !== 404) {
       console.error(`❌ ES delete failed [${index}/${id}]:`, err.message);
     }
+  }
+}
+
+/**
+ * Performs a bulk update in Elasticsearch.
+ * @param {Array} operations - Array of objects { action: 'upsert'|'delete', index, id, doc }
+ */
+export async function bulkUpdate(operations) {
+  const es = getElasticsearchClient();
+  if (!es || !operations.length) return;
+
+  const body = operations.flatMap(op => {
+    if (op.action === 'upsert') {
+      return [
+        { index: { _index: op.index, _id: op.id } },
+        op.doc
+      ];
+    } else if (op.action === 'delete') {
+      return [
+        { delete: { _index: op.index, _id: op.id } }
+      ];
+    }
+    return [];
+  });
+
+  try {
+    const { body: bulkResponse } = await es.bulk({ body });
+    if (bulkResponse.errors) {
+       console.error("ES Bulk updates had errors", JSON.stringify(bulkResponse.items.filter(i => i.index?.error || i.delete?.error)));
+    }
+  } catch (err) {
+    console.error("❌ ES bulk update failed:", err.message);
   }
 }
 
@@ -194,7 +228,7 @@ export async function searchMessages({ userId, query, senderId, isRead, hasAttac
   if (query) must.push({ multi_match: { query, fields: ["subject^3", "snippet^2", "from", "to"], fuzziness: "AUTO", type: "best_fields" } });
 
   const filter = [];
-  if (senderId)            filter.push({ term: { senderId } });
+  if (senderId) filter.push({ term: { senderId } });
   if (isRead !== undefined) filter.push({ term: { isRead } });
   if (hasAttachments !== undefined) filter.push({ term: { hasAttachments } });
 
@@ -221,7 +255,7 @@ export async function searchEmails({ userId, query, campaignId, status, from = 0
 
   const filter = [];
   if (campaignId) filter.push({ term: { campaignId } });
-  if (status)     filter.push({ term: { status } });
+  if (status) filter.push({ term: { status } });
 
   try {
     const { body: result } = await es.search({
@@ -327,18 +361,18 @@ export async function reindexContacts(ListUploadRecord, ListUploadBatch) {
     if (!contact.batch?.userId) continue;
 
     await upsertDocument(INDICES.CONTACTS, contact.id, {
-      id:              contact.id,
-      userId:          contact.batch.userId,
-      batchId:         contact.batchId,
-      rawEmail:        contact.rawEmail,
+      id: contact.id,
+      userId: contact.batch.userId,
+      batchId: contact.batchId,
+      rawEmail: contact.rawEmail,
       normalizedEmail: contact.normalizedEmail,
-      domain:          contact.domain,
-      name:            contact.name,
-      status:          contact.status,
-      company:         contact.metadata?.company || null,
-      phone:           contact.metadata?.phone   || null,
-      title:           contact.metadata?.title   || null,
-      createdAt:       contact.createdAt,
+      domain: contact.domain,
+      name: contact.name,
+      status: contact.status,
+      company: contact.metadata?.company || null,
+      phone: contact.metadata?.phone || null,
+      title: contact.metadata?.title || null,
+      createdAt: contact.createdAt,
     });
     successCount++;
   }

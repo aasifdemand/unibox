@@ -16,7 +16,7 @@ import { DeliveryGuard } from "../utils/delivery-guard.js";
 const log = (level, message, meta = {}) =>
   console.log(
     JSON.stringify({
-      ts: new Date().toISOString(),
+      ts: DateTime.now().toISO(),
       service: "campaign-scheduler",
       level,
       message,
@@ -41,7 +41,7 @@ const limit = pLimit(20); // Process 20 campaigns in parallel
         if (nowUtc >= scheduledAt) {
           await campaign.update({
             status: "running",
-            startedAt: new Date()
+            startedAt: DateTime.now().toJSDate()
           });
           log("INFO", "▶️ Campaign started", { campaignId: campaign.id });
         }
@@ -101,7 +101,7 @@ const limit = pLimit(20); // Process 20 campaigns in parallel
         where: {
           campaignId: campaign.id,
           status: "pending",
-          nextRunAt: { [Op.or]: [{ [Op.lte]: new Date() }, { [Op.is]: null }] },
+          nextRunAt: { [Op.or]: [{ [Op.lte]: DateTime.now().toJSDate() }, { [Op.is]: null }] },
         },
         include: [{ model: GlobalEmailRegistry, required: false, attributes: ["unsubscribed"] }],
         order: [["nextRunAt", "ASC"]],
@@ -152,11 +152,11 @@ const limit = pLimit(20); // Process 20 campaigns in parallel
           where: {
             status: { [Op.in]: ["scheduled", "running"] },
             [Op.or]: [
-              { lastScheduledCheckAt: { [Op.lt]: new Date(Date.now() - 60 * 1000) } },
+              { lastScheduledCheckAt: { [Op.lt]: DateTime.now().minus({ minutes: 1 }).toJSDate() } },
               { lastScheduledCheckAt: null }
             ]
           },
-          limit: 50, // Process 50 campaigns per instance per tick
+          limit: 200, // Handle up to 200 campaigns per tick for high-scale environments
           lock: true,
           skipLocked: true, // Standard for high-scale distributed workers
           transaction: t
@@ -165,7 +165,7 @@ const limit = pLimit(20); // Process 20 campaigns in parallel
         if (batch.length > 0) {
           const ids = batch.map(c => c.id);
           await Campaign.update(
-            { lastScheduledCheckAt: new Date() },
+            { lastScheduledCheckAt: DateTime.now().toJSDate() },
             { 
               where: { id: { [Op.in]: ids } },
               transaction: t 

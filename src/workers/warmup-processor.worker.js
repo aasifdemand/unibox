@@ -1,10 +1,10 @@
 import { initGlobalErrorHandlers } from "../utils/error-handler.js";
 initGlobalErrorHandlers();
 
-import { 
-  SmtpSender, 
-  GmailSender, 
-  OutlookSender, 
+import {
+  SmtpSender,
+  GmailSender,
+  OutlookSender,
   WarmupMessage,
   SenderHealth
 } from "../models/index.js";
@@ -19,11 +19,12 @@ import { Op } from "sequelize";
 import sequelize from "../config/db.js";
 import { getRabbitChannel as getChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
+import { DateTime } from 'luxon';
 
 const log = (level, message, meta = {}) =>
   console.log(
     JSON.stringify({
-      ts: new Date().toISOString(),
+      ts: DateTime.now().toISO(),
       service: "warmup-processor-consumer",
       level,
       message,
@@ -32,43 +33,43 @@ const log = (level, message, meta = {}) =>
   );
 
 async function startConsumer() {
-    const channel = await getChannel();
+  const channel = await getChannel();
 
-    // 1. WARMUP_RESCUE Consumer
-    await channel.assertQueue(QUEUES.WARMUP_RESCUE, { durable: true });
-    channel.prefetch(10); // Process up to 10 in parallel per worker process
+  // 1. WARMUP_RESCUE Consumer
+  await channel.assertQueue(QUEUES.WARMUP_RESCUE, { durable: true });
+  channel.prefetch(10); // Process up to 10 in parallel per worker process
 
-    channel.consume(QUEUES.WARMUP_RESCUE, async (msg) => {
-        if (!msg) return;
-        const data = JSON.parse(msg.content.toString());
-        try {
-            log("INFO", `Processing Rescue Task for ${data.email}`, { type: data.senderType });
-            await processRescueTask(data);
-            channel.ack(msg);
-        } catch (err) {
-            log("ERROR", `Rescue Task Failed for ${data.email}`, { error: err.message });
-            // Don't requue indefinitely to avoid poison messages
-            channel.nack(msg, false, false); 
-        }
-    });
+  channel.consume(QUEUES.WARMUP_RESCUE, async (msg) => {
+    if (!msg) return;
+    const data = JSON.parse(msg.content.toString());
+    try {
+      log("INFO", `Processing Rescue Task for ${data.email}`, { type: data.senderType });
+      await processRescueTask(data);
+      channel.ack(msg);
+    } catch (err) {
+      log("ERROR", `Rescue Task Failed for ${data.email}`, { error: err.message });
+      // Don't requue indefinitely to avoid poison messages
+      channel.nack(msg, false, false);
+    }
+  });
 
-    // 2. WARMUP_SEND Consumer
-    await channel.assertQueue(QUEUES.WARMUP_SEND, { durable: true });
-    
-    channel.consume(QUEUES.WARMUP_SEND, async (msg) => {
-        if (!msg) return;
-        const data = JSON.parse(msg.content.toString());
-        try {
-            log("INFO", `Processing Send Task for ${data.email}`, { type: data.senderType });
-            await processSendTask(data);
-            channel.ack(msg);
-        } catch (err) {
-            log("ERROR", `Send Task Failed for ${data.email}`, { error: err.message });
-            channel.nack(msg, false, false);
-        }
-    });
+  // 2. WARMUP_SEND Consumer
+  await channel.assertQueue(QUEUES.WARMUP_SEND, { durable: true });
 
-    log("INFO", "🚀 Warmup Processor Consumer started and listening");
+  channel.consume(QUEUES.WARMUP_SEND, async (msg) => {
+    if (!msg) return;
+    const data = JSON.parse(msg.content.toString());
+    try {
+      log("INFO", `Processing Send Task for ${data.email}`, { type: data.senderType });
+      await processSendTask(data);
+      channel.ack(msg);
+    } catch (err) {
+      log("ERROR", `Send Task Failed for ${data.email}`, { error: err.message });
+      channel.nack(msg, false, false);
+    }
+  });
+
+  log("INFO", "🚀 Warmup Processor Consumer started and listening");
 }
 
 /* =========================
@@ -76,70 +77,70 @@ async function startConsumer() {
 ========================= */
 
 async function processSendTask(data) {
-    const { senderId, senderType } = data;
-    let model;
-    if (senderType === 'gmail') model = GmailSender;
-    else if (senderType === 'outlook') model = OutlookSender;
-    else model = SmtpSender;
+  const { senderId, senderType } = data;
+  let model;
+  if (senderType === 'gmail') model = GmailSender;
+  else if (senderType === 'outlook') model = OutlookSender;
+  else model = SmtpSender;
 
-    const sender = await model.findByPk(senderId);
-    if (!sender || !sender.warmupEnabled || sender.warmupStatus !== 'active') return;
+  const sender = await model.findByPk(senderId);
+  if (!sender || !sender.warmupEnabled || sender.warmupStatus !== 'active') return;
 
-    // Trigger the actual send via service
-    await activeWarmupService.triggerWarmupSend(sender);
+  // Trigger the actual send via service
+  await activeWarmupService.triggerWarmupSend(sender);
 
-    // Increment current sent count
-    await sender.increment("warmupCurrentSent");
-    log("INFO", `Successfully sent warmup email for ${sender.email}`);
+  // Increment current sent count
+  await sender.increment("warmupCurrentSent");
+  log("INFO", `Successfully sent warmup email for ${sender.email}`);
 }
 
 async function processRescueTask(data) {
-    const { senderId, senderType } = data;
-    let model;
-    if (senderType === 'gmail') model = GmailSender;
-    else if (senderType === 'outlook') model = OutlookSender;
-    else model = SmtpSender;
+  const { senderId, senderType } = data;
+  let model;
+  if (senderType === 'gmail') model = GmailSender;
+  else if (senderType === 'outlook') model = OutlookSender;
+  else model = SmtpSender;
 
-    const sender = await model.findByPk(senderId);
-    if (!sender || !sender.warmupEnabled) return;
-    sender.type = senderType; // Inject for monitor functions
+  const sender = await model.findByPk(senderId);
+  if (!sender || !sender.warmupEnabled) return;
+  sender.type = senderType; // Inject for monitor functions
 
-    // 1. Fetch recent warmup messages sent to this mailbox
-    const recentWarmups = await WarmupMessage.findAll({
-      where: {
-        recipientEmail: sender.email,
-        sentAt: { [Op.gte]: new Date(Date.now() - 48 * 60 * 60 * 1000) },
-        status: { [Op.ne]: 'replied' }
-      }
-    });
-
-    if (recentWarmups.length === 0) return;
-
-    // 2. Scan folders
-    let stats = { totalFound: 0, spamCount: 0 };
-    if (senderType === 'gmail') stats = await monitorGmail(sender, recentWarmups);
-    else if (senderType === 'outlook') stats = await monitorOutlook(sender, recentWarmups);
-    else if (senderType === 'smtp') stats = await monitorImap(sender, recentWarmups);
-
-    // 3. Update Health
-    if (stats.totalFound > 0) {
-      const spamRate = (stats.spamCount / stats.totalFound) * 100;
-      const health = await SenderHealth.findOne({ where: { mailboxId: sender.id } });
-      
-      if (!health) {
-        await SenderHealth.create({ 
-          mailboxId: sender.id,
-          reputationScore: 100,
-          healthStatus: 'healthy'
-        });
-      }
-
-      await SenderHealth.update({
-        warmupSpamRate: spamRate,
-        warmupTotalRescued: sequelize.literal(`"warmupTotalRescued" + ${stats.spamCount}`),
-        lastCheckedAt: new Date()
-      }, { where: { mailboxId: sender.id } });
+  // 1. Fetch recent warmup messages sent to this mailbox
+  const recentWarmups = await WarmupMessage.findAll({
+    where: {
+      recipientEmail: sender.email,
+      sentAt: { [Op.gte]: DateTime.now().minus({ hours: 48 }).toJSDate() },
+      status: { [Op.ne]: 'replied' }
     }
+  });
+
+  if (recentWarmups.length === 0) return;
+
+  // 2. Scan folders
+  let stats = { totalFound: 0, spamCount: 0 };
+  if (senderType === 'gmail') stats = await monitorGmail(sender, recentWarmups);
+  else if (senderType === 'outlook') stats = await monitorOutlook(sender, recentWarmups);
+  else if (senderType === 'smtp') stats = await monitorImap(sender, recentWarmups);
+
+  // 3. Update Health
+  if (stats.totalFound > 0) {
+    const spamRate = (stats.spamCount / stats.totalFound) * 100;
+    const health = await SenderHealth.findOne({ where: { mailboxId: sender.id } });
+
+    if (!health) {
+      await SenderHealth.create({
+        mailboxId: sender.id,
+        reputationScore: 100,
+        healthStatus: 'healthy'
+      });
+    }
+
+    await SenderHealth.update({
+      warmupSpamRate: spamRate,
+      warmupTotalRescued: sequelize.literal(`"warmupTotalRescued" + ${stats.spamCount}`),
+      lastCheckedAt: DateTime.now().toJSDate()
+    }, { where: { mailboxId: sender.id } });
+  }
 }
 
 /* =========================
@@ -159,7 +160,7 @@ async function monitorGmail(mailbox, recentWarmups) {
 
   const res = await gmail.users.messages.list({ userId: "me", q: query });
   let stats = { totalFound: 0, spamCount: 0 };
-  
+
   for (const msg of res.data.messages || []) {
     const full = await gmail.users.messages.get({ userId: "me", id: msg.id, format: "metadata", metadataHeaders: ["From", "Subject"] });
     const headers = full.data.payload.headers;
@@ -195,7 +196,7 @@ async function monitorOutlook(mailbox, recentWarmups) {
 
   for (const folder of folders) {
     const res = await axios.get(`https://graph.microsoft.com/v1.0/me/mailFolders/${folder}/messages?$top=20`, { headers });
-    
+
     for (const msg of res.data.value || []) {
       const from = msg.from?.emailAddress?.address;
       const match = recentWarmups.find(w => from?.toLowerCase() === w.senderEmail.toLowerCase() && msg.subject === w.subject);
@@ -220,12 +221,12 @@ async function monitorOutlook(mailbox, recentWarmups) {
 
 async function monitorImap(mailbox, recentWarmups) {
   const imap = await createImapConnection(mailbox);
-  
+
   return new Promise((resolve) => {
     imap.once("ready", () => {
       const scanFolders = ["INBOX", "Spam", "Junk"];
       let stats = { totalFound: 0, spamCount: 0 };
-      
+
       const doScan = async (idx) => {
         if (idx >= scanFolders.length) {
           imap.end();
@@ -236,7 +237,7 @@ async function monitorImap(mailbox, recentWarmups) {
         imap.openBox(box, false, (err) => {
           if (err) return doScan(idx + 1);
 
-          imap.search([["SINCE", new Date(Date.now() - 2 * 24 * 60 * 60 * 1000)]], (err, results) => {
+          imap.search([["SINCE", DateTime.now().minus({ days: 2 }).toJSDate()]], (err, results) => {
             if (err || !results.length) return doScan(idx + 1);
 
             const fetch = imap.fetch(results, { bodies: "HEADER.FIELDS (FROM SUBJECT)" });
@@ -251,17 +252,17 @@ async function monitorImap(mailbox, recentWarmups) {
 
                   const match = recentWarmups.find(w => from?.toLowerCase() === w.senderEmail.toLowerCase() && subject === w.subject);
                   if (match) {
-                     stats.totalFound++;
-                     msg.once("attributes", async (attrs) => {
-                        if (box !== "INBOX") {
-                           stats.spamCount++;
-                           await activeWarmupService.moveToInbox(mailbox, "smtp", attrs.uid);
-                        }
-                        if (!attrs.flags.includes("\\Seen")) {
-                           await activeWarmupService.markAsRead(mailbox, "smtp", attrs.uid);
-                        }
-                        await handleMaybeReply(mailbox, "smtp", attrs.uid, match);
-                     });
+                    stats.totalFound++;
+                    msg.once("attributes", async (attrs) => {
+                      if (box !== "INBOX") {
+                        stats.spamCount++;
+                        await activeWarmupService.moveToInbox(mailbox, "smtp", attrs.uid);
+                      }
+                      if (!attrs.flags.includes("\\Seen")) {
+                        await activeWarmupService.markAsRead(mailbox, "smtp", attrs.uid);
+                      }
+                      await handleMaybeReply(mailbox, "smtp", attrs.uid, match);
+                    });
                   }
                 });
               });
@@ -273,7 +274,7 @@ async function monitorImap(mailbox, recentWarmups) {
 
       doScan(0);
     });
-    
+
     imap.once("error", (err) => {
       log("ERROR", "IMAP Monitor Error", { error: err.message });
       resolve({ totalFound: 0, spamCount: 0 });
@@ -304,8 +305,8 @@ async function handleMaybeReply(mailbox, type, messageId, warmupLog) {
       isReply: true
     }
   })), { persistent: true });
-  
-  await warmupLog.update({ status: 'replied', lastActionAt: new Date() });
+
+  await warmupLog.update({ status: 'replied', lastActionAt: DateTime.now().toJSDate() });
 }
 
 startConsumer();

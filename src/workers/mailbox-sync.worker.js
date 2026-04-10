@@ -1,4 +1,5 @@
 import { Op } from "sequelize";
+import { DateTime } from "luxon";
 import sequelize from "../config/db.js";
 import { initGlobalErrorHandlers } from "../utils/error-handler.js";
 import { getRabbitChannel } from "../queues/rabbit.js";
@@ -12,7 +13,7 @@ initGlobalErrorHandlers();
 const log = (level, message, meta = {}) =>
   console.log(
     JSON.stringify({
-      ts: new Date().toISOString(),
+      ts: DateTime.now().toISO(),
       service: "mailbox-sync",
       level,
       message,
@@ -40,7 +41,7 @@ async function processMailboxSync(msg, channel) {
  */
 async function scheduleBatchSyncs() {
   try {
-    const fifteenMinsAgo = new Date(Date.now() - 15 * 60 * 1000);
+    const fifteenMinsAgo = DateTime.now().minus({ minutes: 15 }).toJSDate();
     
     // Process 100 per provider per tick
     const queryOptions = {
@@ -72,7 +73,7 @@ async function scheduleBatchSyncs() {
 
             if (results.length > 0) {
                 await p.model.update(
-                    { lastSyncCheckAt: new Date() },
+                    { lastSyncCheckAt: DateTime.now().toJSDate() },
                     { 
                         where: { id: { [Op.in]: results.map(r => r.id) } },
                         transaction: t 

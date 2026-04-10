@@ -7,7 +7,7 @@ import { Op } from "sequelize";
 export const log = (level, message, meta = {}) =>
   console.log(
     JSON.stringify({
-      ts: new Date().toISOString(),
+      ts: DateTime.now().toISO(),
       service: "active-warmup-producer",
       level,
       message,
@@ -23,7 +23,7 @@ export async function runWarmupProducerTick(options = {}) {
   try {
     log("INFO", "⏰ Warmup producer tick started", { forceAll: !!options.forceAll });
 
-    const tenMinsAgo = new Date(Date.now() - 10 * 60 * 1000);
+    const tenMinsAgo = DateTime.now().minus({ minutes: 10 }).toJSDate();
     const channel = await getChannel();
 
     // 1. Fetch enabled senders that haven't been checked recently
@@ -77,7 +77,7 @@ export async function runWarmupProducerTick(options = {}) {
           warmupDaysActive: nextDaysActive,
           warmupDailyLimit: nextLimit,
           warmupLastResetDate: today,
-          lastWarmupCheckAt: new Date()
+          lastWarmupCheckAt: DateTime.now().toJSDate()
         });
         
         sender.warmupCurrentSent = 0;
@@ -87,7 +87,7 @@ export async function runWarmupProducerTick(options = {}) {
       // B. ENQUEUE: If limit not reached and probability hits
       if (sender.warmupCurrentSent >= sender.warmupDailyLimit) {
         // Still update the timestamp so we don't keep picking up "Finished" senders in every tick
-        await sender.model.update({ lastWarmupCheckAt: new Date() }, { where: { id: sender.id } });
+        await sender.model.update({ lastWarmupCheckAt: DateTime.now().toJSDate() }, { where: { id: sender.id } });
         continue;
       }
 
@@ -101,7 +101,7 @@ export async function runWarmupProducerTick(options = {}) {
           email: sender.email
         })), { persistent: true });
         
-        await sender.model.update({ lastWarmupCheckAt: new Date() }, { where: { id: sender.id } });
+        await sender.model.update({ lastWarmupCheckAt: DateTime.now().toJSDate() }, { where: { id: sender.id } });
         log("INFO", "📤 Enqueued Warmup Send Task", { email: sender.email });
       }
     }

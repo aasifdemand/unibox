@@ -59,7 +59,7 @@ function nextSendableTime(campaign) {
 }
 
 const log = (level, message, meta = {}) =>
-  console.log(JSON.stringify({ ts: new Date().toISOString(), service: "campaign-orchestrator", level, message, ...meta }));
+  console.log(JSON.stringify({ ts: DateTime.now().toISO(), service: "campaign-orchestrator", level, message, ...meta }));
 
 
 
@@ -69,7 +69,7 @@ async function startWorker() {
     channel = await getChannel();
     await channel.assertQueue(QUEUES.CAMPAIGN_SEND, { durable: true });
     await channel.assertQueue(QUEUES.EMAIL_ROUTE, { durable: true });
-    channel.prefetch(1);
+    channel.prefetch(10);
 
     channel.consume(QUEUES.CAMPAIGN_SEND, async (msg) => {
       if (!msg) return;
@@ -83,119 +83,130 @@ async function startWorker() {
           return channel.ack(msg);
         }
 
+        const nextValidTime = nextSendableTime(campaign);
+        if (nextValidTime !== null) {
+          await recipient.update({ nextRunAt: nextValidTime });
+          return channel.ack(msg);
+        }
+
+        // 1. Identify current Step
+        const stepOrder = Number.isInteger(recipient.currentStep) ? recipient.currentStep : 0;
+
+        // 2. Ensure Step 0 exists (Self-Healing)
+        if (stepOrder === 0) {
+          await CampaignStep.upsert({
+            campaignId: campaign.id,
+            stepOrder: 0,
+            subject: campaign.subject || "No Subject",
+            htmlBody: campaign.htmlBody || "<p></p>",
+            textBody: campaign.textBody || "",
+            delayMinutes: 0,
+            condition: "always",
+          });
+        }
+
+        const stepConfig = await CampaignStep.findOne({
+          where: { campaignId, stepOrder }
+        });
+
+        if (!stepConfig) {
+          await recipient.update({ status: "completed", nextRunAt: null });
+          await tryCompleteCampaign(campaignId);
+          return channel.ack(msg);
+        }
+
+        // 3. Global Registry Checks (Unsubscribes & Verification)
+        const globalRegistry = await GlobalEmailRegistry.findOne({
+          where: {
+            normalizedEmail: recipient.email.toLowerCase(),
+            [Op.or]: [
+              { userId: campaign.userId },
+              { userId: null }
+            ]
+          }
+        });
+
+        if (globalRegistry?.unsubscribed) {
+          log("INFO", "🚫 Recipient unsubscribed. Stopping.", { recipientEmail: recipient.email });
+          await recipient.update({ status: "unsubscribed", nextRunAt: null });
+          await tryCompleteCampaign(campaignId);
+          return channel.ack(msg);
+        }
+
+        const vs = globalRegistry?.verificationStatus;
+        if (!vs || vs === "invalid" || vs === "unknown" || vs === "verifying" || (vs === "risky" && campaign.blockRiskyEmails)) {
+          log("INFO", `🚫 Recipient email ${vs || 'unverified'}. Stopping.`, { recipientEmail: recipient.email });
+          await recipient.update({ status: "stopped", nextRunAt: null });
+          await tryCompleteCampaign(campaignId);
+          return channel.ack(msg);
+        }
+
+        // 4. Step Condition Logic (no_reply, on_open, etc.)
+        if (stepOrder > 0 && stepConfig.condition !== "always") {
+          const previousSend = await CampaignSend.findOne({
+            where: { campaignId, recipientId, step: stepOrder - 1 },
+            order: [["createdAt", "DESC"]]
+          });
+
+          let conditionMet = false;
+          if (previousSend) {
+            if (stepConfig.condition === "no_reply" && !previousSend.repliedAt) conditionMet = true;
+            if (stepConfig.condition === "on_open" && previousSend.openedAt) conditionMet = true;
+            if (stepConfig.condition === "on_click" && previousSend.clickedAt) conditionMet = true;
+          }
+
+          if (!conditionMet) {
+            log("DEBUG", "⏭️ Step condition not met. Skipping to next step.", { stepOrder, condition: stepConfig.condition });
+            await recipient.update({ currentStep: stepOrder + 1, nextRunAt: DateTime.now().toJSDate() });
+            channel.sendToQueue(QUEUES.CAMPAIGN_SEND, Buffer.from(JSON.stringify({ campaignId, recipientId })));
+            return channel.ack(msg);
+          }
+        }
+
+        // Shuffled sender selection
+        let senderIdToUse = null;
+        let sender = null;
+        const candidateIds = campaign.senderIds && campaign.senderIds.length > 0
+          ? [...campaign.senderIds].sort(() => Math.random() - 0.5) 
+          : [campaign.senderId].filter(id => id != null);
+
+        for (const sId of candidateIds) {
+          const candidateSender = await getSenderWithType(sId, campaign.senderType);
+          if (!candidateSender || !candidateSender.isVerified || !candidateSender.isActive) continue;
+          const health = await SenderHealth.findOne({ where: { mailboxId: sId } });
+          if (health?.blacklisted) continue;
+          senderIdToUse = sId;
+          sender = candidateSender;
+          break;
+        }
+
+        if (!sender) {
+          log("WARN", "🚨 No healthy senders. Auto-pausing campaign.", { campaignId });
+          await campaign.update({ status: "paused", pauseReason: "No healthy mailboxes available." });
+          return channel.ack(msg);
+        }
+
+        const variables = {
+          email: recipient.email,
+          name: recipient.name || "",
+          first_name: (recipient.name || "").split(" ")[0] || "",
+          sender_name: sender.displayName || sender.name || "",
+          ...recipient.metadata
+        };
+
+        const emailId = crypto.randomUUID();
+        const renderedSubject = renderTemplate(stepConfig.subject, variables);
+        const renderedHtml = injectTracking(renderTemplate(stepConfig.htmlBody, variables), emailId, {
+          trackOpens: campaign.trackOpens,
+          trackClicks: campaign.trackClicks,
+          unsubscribeLink: campaign.unsubscribeLink,
+        });
+        const renderedText = renderTemplate(stepConfig.textBody, variables);
+
         const t = await sequelize.transaction();
         try {
-          const step = Number.isInteger(recipient.currentStep) ? recipient.currentStep : 0;
-          if (step === 0) {
-            await CampaignStep.upsert({
-              campaignId: campaign.id,
-              stepOrder: 0,
-              subject: campaign.subject || "No Subject",
-              htmlBody: campaign.htmlBody || "<p></p>",
-              textBody: campaign.textBody || "",
-              delayMinutes: 0,
-              condition: "always",
-            }, { transaction: t });
-          }
-
-          const stepConfig = await CampaignStep.findOne({
-            where: { campaignId, stepOrder: step },
-            transaction: t
-          });
-
-          if (!stepConfig) {
-            await recipient.update({ status: "completed", nextRunAt: null }, { transaction: t });
-            await tryCompleteCampaign(campaignId, { transaction: t });
-            await t.commit();
-            return channel.ack(msg);
-          }
-
-          const globalRegistry = await GlobalEmailRegistry.findOne({
-            where: {
-              normalizedEmail: recipient.email.toLowerCase(),
-              [Op.or]: [
-                { userId: campaign.userId },
-                { userId: null }
-              ]
-            },
-            transaction: t
-          });
-
-          if (globalRegistry?.unsubscribed) {
-            await recipient.update({ status: "unsubscribed", nextRunAt: null }, { transaction: t });
-            await tryCompleteCampaign(campaignId, { transaction: t });
-            await t.commit();
-            return channel.ack(msg);
-          }
-
-          const vs = globalRegistry?.verificationStatus;
-          if (!vs || vs === "invalid" || vs === "unknown" || vs === "verifying" || (vs === "risky" && campaign.blockRiskyEmails)) {
-            await recipient.update({ status: "stopped", nextRunAt: null }, { transaction: t });
-            await tryCompleteCampaign(campaignId, { transaction: t });
-            await t.commit();
-            return channel.ack(msg);
-          }
-
-          if (step > 0 && stepConfig.condition !== "always") {
-            const previousSend = await CampaignSend.findOne({
-              where: { campaignId, recipientId, step: step - 1 },
-              order: [["createdAt", "DESC"]],
-              transaction: t
-            });
-            let conditionMet = false;
-            if (previousSend) {
-              if (stepConfig.condition === "no_reply" && !previousSend.repliedAt) conditionMet = true;
-              if (stepConfig.condition === "on_open" && previousSend.openedAt) conditionMet = true;
-              if (stepConfig.condition === "on_click" && previousSend.clickedAt) conditionMet = true;
-            }
-            if (!conditionMet) {
-              await recipient.update({ currentStep: step + 1, nextRunAt: new Date() }, { transaction: t });
-              await t.commit();
-              channel.sendToQueue(QUEUES.CAMPAIGN_SEND, Buffer.from(JSON.stringify({ campaignId, recipientId })));
-              return channel.ack(msg);
-            }
-          }
-
-          const nextValidTime = nextSendableTime(campaign);
-          if (nextValidTime !== null) {
-            await recipient.update({ nextRunAt: nextValidTime }, { transaction: t });
-            await t.commit();
-            return channel.ack(msg);
-          }
-
-          // --- SENDER SELECTION & HEALTH VALIDATION ---
-          let senderIdToUse = null;
-          let sender = null;
-          const candidateIds = campaign.senderIds && campaign.senderIds.length > 0
-            ? [...campaign.senderIds].sort(() => Math.random() - 0.5) // Shuffle for rotation
-            : [campaign.senderId].filter(id => id != null);
-
-          for (const sId of candidateIds) {
-            const candidateSender = await getSenderWithType(sId, campaign.senderType);
-            if (!candidateSender || !candidateSender.isVerified || !candidateSender.isActive) continue;
-
-            const health = await SenderHealth.findOne({ where: { mailboxId: sId } });
-            if (health?.blacklisted) continue;
-
-            // Found a healthy sender!
-            senderIdToUse = sId;
-            sender = candidateSender;
-            break;
-          }
-
-          if (!sender) {
-            log("WARN", "🚨 No healthy senders available. Auto-pausing campaign.", { campaignId });
-            await campaign.update({
-              status: "paused",
-              pauseReason: "Auto-paused: No verified or healthy mailboxes available."
-            }, { transaction: t });
-            await t.commit();
-            return channel.ack(msg);
-          }
-          // --------------------------------------------
-
           const [send, created] = await CampaignSend.findOrCreate({
-            where: { campaignId, recipientId, step },
+            where: { campaignId, recipientId, step: stepOrder },
             defaults: { senderId: senderIdToUse, status: "queued" },
             transaction: t
           });
@@ -205,19 +216,6 @@ async function startWorker() {
             return channel.ack(msg);
           }
 
-          const variables = {
-            email: recipient.email,
-            name: recipient.name || "",
-            first_name: (recipient.name || "").split(" ")[0] || "",
-            sender_name: sender?.displayName || sender?.name || "",
-            ...recipient.metadata
-          };
-
-          const activeSubject = stepConfig.subject;
-          const activeHtml = stepConfig.htmlBody;
-          const activeText = stepConfig.textBody;
-
-          const emailId = crypto.randomUUID();
           const email = await Email.create({
             id: emailId,
             userId: campaign.userId,
@@ -226,35 +224,32 @@ async function startWorker() {
             senderType: campaign.senderType,
             recipientEmail: recipient.email,
             recipientId: recipient.id,
-            subject: renderTemplate(activeSubject, variables),
-            htmlBody: injectTracking(renderTemplate(activeHtml, variables), emailId, {
-              trackOpens: campaign.trackOpens,
-              trackClicks: campaign.trackClicks,
-              unsubscribeLink: campaign.unsubscribeLink,
-            }),
-            textBody: renderTemplate(activeText, variables),
+            subject: renderedSubject,
+            htmlBody: renderedHtml,
+            textBody: renderedText,
             status: "pending",
-            metadata: { step },
+            metadata: { step: stepOrder },
           }, { transaction: t });
 
-          const nextStep = stepConfig.onConditionStepOrder || step + 1;
+          const nextStep = stepConfig.onConditionStepOrder || stepOrder + 1;
           const nextStepConfig = await CampaignStep.findOne({ where: { campaignId, stepOrder: nextStep }, transaction: t });
+          
           if (nextStepConfig) {
             await recipient.update({
-              status: "pending", currentStep: nextStep, lastSentAt: new Date(),
+              status: "pending", currentStep: nextStep, lastSentAt: DateTime.now().toJSDate(),
               nextRunAt: DateTime.now().plus({ minutes: nextStepConfig.delayMinutes || 0 }).toJSDate()
             }, { transaction: t });
           } else {
-            await recipient.update({ status: "completed", currentStep: nextStep, lastSentAt: new Date(), nextRunAt: null }, { transaction: t });
+            await recipient.update({ status: "completed", currentStep: nextStep, lastSentAt: DateTime.now().toJSDate(), nextRunAt: null }, { transaction: t });
             await tryCompleteCampaign(campaignId, { transaction: t });
           }
 
           await send.update({ emailId: email.id, status: "sent" }, { transaction: t });
           await t.commit();
           channel.sendToQueue(QUEUES.EMAIL_ROUTE, Buffer.from(JSON.stringify({ emailId: email.id })), { persistent: true });
-        } catch (txnErr) {
-          await t.rollback();
-          throw txnErr;
+        } catch (internalErr) {
+           await t.rollback();
+           throw internalErr;
         }
         channel.ack(msg);
       } catch (err) {

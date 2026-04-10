@@ -7,6 +7,7 @@ import MailComposer from "nodemailer/lib/mail-composer/index.js";
 import { randomUUID } from "crypto";
 import axios from "axios";
 import dns from "dns/promises";
+import { DateTime } from "luxon";
 
 
 import Email from "../models/email.model.js";
@@ -167,7 +168,7 @@ function evictTransporter(senderId) {
 const log = (level, message, meta = {}) =>
   console.log(
     JSON.stringify({
-      ts: new Date().toISOString(),
+      ts: DateTime.now().toISO(),
       service: "email-sender",
       level,
       message,
@@ -231,7 +232,7 @@ async function startWorker() {
       try {
         const payload = JSON.parse(msg.content.toString());
         log("DEBUG", "📥 RabbitMQ Message Received", { ...payload });
-        
+
         const {
           senderType,
           policy = {},
@@ -242,7 +243,7 @@ async function startWorker() {
           senderId: pSenderId,
           sender: pSender,
         } = payload;
-        
+
         emailId = payload.emailId;
         isWarmup = payload.isWarmup || false;
 
@@ -259,12 +260,12 @@ async function startWorker() {
         else sender = await SmtpSender.findByPk(finalSenderId);
 
         if (!sender || !sender.isVerified) {
-           log("ERROR", "Sender not found or not verified", { 
-             senderId: finalSenderId, 
-             senderType: finalSenderType,
-             isWarmup 
-           });
-           throw new Error(`Sender [${finalSenderType}] with ID [${finalSenderId}] is unverified or missing`);
+          log("ERROR", "Sender not found or not verified", {
+            senderId: finalSenderId,
+            senderType: finalSenderType,
+            isWarmup
+          });
+          throw new Error(`Sender [${finalSenderType}] with ID [${finalSenderId}] is unverified or missing`);
         }
 
         // 3. Load Email Record (if not warmup)
@@ -310,7 +311,7 @@ async function startWorker() {
         if (senderType === "smtp") {
           const maxDaily = await smtpWarmupService.getSenderDailyLimit(sender);
 
-          const today = new Date().toISOString().split("T")[0];
+          const today = DateTime.now().toISODate();
           const warmupKey = `warmup:${sender.id}:${today}`;
           const campaignKey = `campaign:${sender.id}:${today}`;
 
@@ -577,7 +578,7 @@ async function startWorker() {
         if (!isWarmup) {
           await emailRecord.update({
             status: "sent",
-            sentAt: new Date(),
+            sentAt: DateTime.now().toJSDate(),
             providerMessageId,
             providerThreadId,
             providerConversationId,
@@ -586,7 +587,7 @@ async function startWorker() {
           await EmailEvent.create({
             emailId,
             eventType: "sent",
-            eventTimestamp: new Date(),
+            eventTimestamp: DateTime.now().toJSDate(),
           });
 
           // 📊 UPDATE CAMPAIGN STATS
@@ -595,7 +596,7 @@ async function startWorker() {
               CampaignSend.update(
                 {
                   status: "sent",
-                  sentAt: new Date(),
+                  sentAt: DateTime.now().toJSDate(),
                 },
                 { where: { emailId: emailRecord.id } },
               ),
@@ -636,8 +637,8 @@ async function startWorker() {
 
         channel.ack(msg);
       } catch (err) {
-        let errorMetadata = { 
-          error: err.message, 
+        let errorMetadata = {
+          error: err.message,
           stack: err.stack,
           emailId,
           isWarmup
@@ -679,7 +680,7 @@ async function startWorker() {
             emailId: emailRecord.id,
             bounceType,
             reason: err.message,
-            occurredAt: new Date(),
+            occurredAt: DateTime.now().toJSDate(),
           });
 
           // 🛡️ REPUTATION PROTECTION (GLOBAL GUARD)

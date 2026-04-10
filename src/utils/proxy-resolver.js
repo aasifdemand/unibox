@@ -1,6 +1,7 @@
 import fs from "fs/promises";
 import path from "path";
 import { getCachedData, setCachedData, deleteCachedData } from "./redis-client.js";
+import crypto from "crypto";
 
 const STICKY_TTL = 86400; // 24 hours (86,400 seconds)
 const PROXIES_FILE = path.join(process.cwd(), "proxies.json");
@@ -9,15 +10,15 @@ const PROXIES_FILE = path.join(process.cwd(), "proxies.json");
  * SAMPLE PROXY FORMAT for proxies.json:
  * [
  *   "socks5://username:password@ip:port",
- *   "socks5://user2:pass2@1.2.3.4:1080"
+ *   "socks5://user2:pass2@1.2.3.4:1080",
+ *   "socks5://user:pass-{session}@ip:port"
  * ]
  */
 
 /**
  * Resolves a SOCKS5 proxy for a given email address from proxies.json with 24h sticky sessions.
- * 1. Checks Redis for a sticky IP assigned to this email.
- * 2. If not found, loads from proxies.json.
- * 3. Assigns and caches the IP for 24h.
+ * Supports "Smart Sessions" where a single rotating proxy endpoint can be used for 
+ * unique IPs using {session} placeholder.
  * 
  * @param {string} email - Sender email
  * @returns {Promise<string|null>} socks5://user:pass@host:port
@@ -49,9 +50,16 @@ export const getProxyForEmail = async (email) => {
     }
 
     // 3️⃣ Selection logic: Randomized for load balancing
-    const selectedProxy = proxyPool[Math.floor(Math.random() * proxyPool.length)];
+    let selectedProxy = proxyPool[Math.floor(Math.random() * proxyPool.length)];
 
-    // 4️⃣ Stick this IP to the user for 24h
+    // 4️⃣ Smart Session Logic
+    // If proxy contains {session}, replace it with a unique ID for this email
+    if (selectedProxy.includes("{session}")) {
+      const sessId = crypto.createHash("md5").update(emailLower).digest("hex").slice(0, 8);
+      selectedProxy = selectedProxy.replace("{session}", sessId);
+    }
+
+    // 5️⃣ Stick this IP to the user for 24h
     await setCachedData(cacheKey, selectedProxy, STICKY_TTL);
 
     console.log(`✅ Assigned new SOCKS5 proxy to ${emailLower} (Sticky for 24h)`);

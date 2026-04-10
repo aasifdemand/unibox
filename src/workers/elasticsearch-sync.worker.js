@@ -17,7 +17,7 @@ initGlobalErrorHandlers();
 
 import { getRabbitChannel as getChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
-import { initIndices, upsertDocument, deleteDocument } from "../services/elasticsearch.service.js";
+import { initIndices, bulkUpdate } from "../services/elasticsearch.service.js";
 
 const log = (level, msg, meta = {}) =>
   console.log(JSON.stringify({ ts: new Date().toISOString(), service: "es-sync", level, msg, ...meta }));
@@ -30,42 +30,52 @@ async function startWorker() {
 
     channel = await getChannel();
     await channel.assertQueue(QUEUES.ES_SYNC, { durable: true });
-    channel.prefetch(10);
 
-    log("INFO", "🔍 Elasticsearch Sync Worker started");
+    // Higher prefetch for bulk processing
+    channel.prefetch(100);
+
+    log("INFO", "🔍 Elasticsearch Sync Worker started (Bulk Mode)");
+
+    let buffer = [];
+    let flushTimeout = null;
+
+    const flushBuffer = async () => {
+      if (buffer.length === 0) return;
+
+      const ops = [...buffer];
+      buffer = [];
+      if (flushTimeout) {
+        clearTimeout(flushTimeout);
+        flushTimeout = null;
+      }
+
+      try {
+        await bulkUpdate(ops.map(o => o.payload));
+        // Ack all messages in this batch
+        ops.forEach(o => channel.ack(o.msg));
+        log("DEBUG", `🚀 Bulk synced ${ops.length} operations to ES`);
+      } catch (err) {
+        log("ERROR", "Bulk sync flush failed", { error: err.message });
+        // Requeue them individually on failure
+        ops.forEach(o => channel.nack(o.msg, false, true));
+      }
+    };
 
     channel.consume(QUEUES.ES_SYNC, async (msg) => {
       if (!msg) return;
 
-      let payload;
       try {
-        payload = JSON.parse(msg.content.toString());
-        const { action, index, id, doc } = payload;
+        const payload = JSON.parse(msg.content.toString());
+        buffer.push({ msg, payload });
 
-        if (!action || !index || !id) {
-          log("WARN", "Invalid ES sync message — missing required fields", { payload });
-          return channel.ack(msg);
+        if (buffer.length >= 50) {
+          await flushBuffer();
+        } else if (!flushTimeout) {
+          flushTimeout = setTimeout(flushBuffer, 2000);
         }
-
-        if (action === "upsert") {
-          if (!doc) {
-            log("WARN", "Upsert action missing doc", { id, index });
-            return channel.ack(msg);
-          }
-          await upsertDocument(index, id, doc);
-          log("DEBUG", `✅ Upserted [${index}/${id}]`);
-        } else if (action === "delete") {
-          await deleteDocument(index, id);
-          log("DEBUG", `🗑️  Deleted [${index}/${id}]`);
-        } else {
-          log("WARN", `Unknown action: ${action}`);
-        }
-
-        channel.ack(msg);
       } catch (err) {
-        log("ERROR", "Failed to process ES sync message", { error: err.message, payload });
-        // Nack without requeue to avoid poison messages
-        channel.nack(msg, false, false);
+        log("ERROR", "Failed to parse ES sync message", { error: err.message });
+        channel.ack(msg);
       }
     });
 

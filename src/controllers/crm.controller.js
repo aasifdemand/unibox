@@ -1,5 +1,6 @@
 import { CrmStage, Lead, ListUploadRecord } from "../models/index.js";
 import { Op } from "sequelize";
+import { DateTime } from "luxon";
 
 /**
  * Get the full CRM pipeline for a user.
@@ -62,11 +63,11 @@ export const moveLead = async (req, res) => {
     const stage = await CrmStage.findOne({ where: { id: stageId, userId } });
     if (!stage) return res.status(404).json({ success: false, message: "Target stage not found" });
 
-    await lead.update({ stageId, lastActivityAt: new Date() });
+    await lead.update({ stageId, lastActivityAt: DateTime.now().toJSDate() });
 
     res.json({ success: true, message: "Lead moved successfully" });
   } catch (error) {
-    res.status(500).json({ success: false, message: "Failed to move lead" });
+    res.status(500).json({ success: false, mesage: error?.message });
   }
 };
 
@@ -96,7 +97,7 @@ export const addStage = async (req, res) => {
 
     res.json({ success: true, data: stage });
   } catch (error) {
-    res.status(500).json({ success: false, message: "Failed to add stage" });
+    res.status(500).json({ success: false, message: error?.message });
   }
 };
 
@@ -116,7 +117,7 @@ export const reorderStages = async (req, res) => {
 
     res.json({ success: true, message: "Stages reordered" });
   } catch (error) {
-    res.status(500).json({ success: false, message: "Failed to reorder stages" });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -162,7 +163,7 @@ export const deleteStage = async (req, res) => {
     res.json({ success: true, message: "Stage deleted" });
   } catch (error) {
     console.error("Error deleting stage:", error);
-    res.status(500).json({ success: false, message: "Failed to delete stage" });
+    res.status(500).json({ success: false, message: error?.mesage });
   }
 };
 
@@ -182,7 +183,7 @@ export const updateLead = async (req, res) => {
     if (notes !== undefined) metadata.notes = notes;
     if (tags !== undefined) metadata.tags = tags;
 
-    const updates = { metadata, lastActivityAt: new Date() };
+    const updates = { metadata, lastActivityAt: DateTime.now().toJSDate() };
     if (value !== undefined) updates.value = parseFloat(value) || 0;
 
     await lead.update(updates);

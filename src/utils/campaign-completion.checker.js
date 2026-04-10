@@ -1,11 +1,12 @@
 import { Op } from "sequelize";
+import { DateTime } from "luxon";
 import Campaign from "../models/campaign.model.js";
 import CampaignRecipient from "../models/campaign-recipient.model.js";
 import CampaignSend from "../models/campaign-send.model.js";
 import { emitToUser } from "./event-broadcaster.js";
 
 export async function checkAllCampaignsCompletion() {
-  console.log(`[${new Date().toISOString()}]  Checking for campaigns that can be completed...`);
+  console.log(`[${DateTime.now().toISO()}]  Checking for campaigns that can be completed...`);
   const runningCampaigns = await Campaign.findAll({
     where: { status: { [Op.in]: ["running", "sending"] } },
   });
@@ -34,7 +35,7 @@ export async function tryCompleteCampaign(campaignId, options = {}) {
 
   if (activeRecipients > 0) return false;
 
-  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const sevenDaysAgo = DateTime.now().minus({ days: 7 }).toJSDate();
   const recentlyCompletedCount = await CampaignRecipient.count({
     where: { campaignId, status: "completed", lastSentAt: { [Op.gte]: sevenDaysAgo } },
     transaction
@@ -43,7 +44,7 @@ export async function tryCompleteCampaign(campaignId, options = {}) {
   if (recentlyCompletedCount > 0) return false;
 
   const [updated] = await Campaign.update(
-    { status: "completed", completedAt: new Date() },
+    { status: "completed", completedAt: DateTime.now().toJSDate() },
     { where: { id: campaignId, status: { [Op.ne]: "completed" } }, transaction }
   );
 

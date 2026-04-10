@@ -1,4 +1,5 @@
 import { Op } from "sequelize";
+import { DateTime } from "luxon";
 import dns from "dns/promises";
 import {
   SenderHealth,
@@ -102,7 +103,7 @@ class SenderHealthService {
       reputationScore: score,
       bounceRate: behavior.bounceRate,
       complaintRate: behavior.complaintRate,
-      lastCheckedAt: new Date(),
+      lastCheckedAt: DateTime.now().toJSDate(),
     });
 
     return score;
@@ -227,7 +228,7 @@ class SenderHealthService {
   ========================= */
 
   async calculateBehavioralMetrics(senderId) {
-    const last7Days = new Date(Date.now() - 7 * 86400000);
+    const last7Days = DateTime.now().minus({ days: 7 }).toJSDate();
 
     const totalSent = await Email.count({
       where: { senderId, sentAt: { [Op.gte]: last7Days } },
@@ -264,7 +265,7 @@ class SenderHealthService {
    * prevent further damage to account reputation.
    */
   async checkGlobalBounceLimit(senderId) {
-    const ONE_HOUR_AGO = new Date(Date.now() - 3600 * 1000);
+    const ONE_HOUR_AGO = DateTime.now().minus({ hours: 1 }).toJSDate();
 
     const [totalSent, hardBounces] = await Promise.all([
       Email.count({
@@ -285,7 +286,7 @@ class SenderHealthService {
           senderId,
           blacklisted: true,
           reputationScore: 0,
-          lastCheckedAt: new Date(),
+          lastCheckedAt: DateTime.now().toJSDate(),
         });
         
         return true; // Triggered guard

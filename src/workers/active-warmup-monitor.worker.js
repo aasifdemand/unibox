@@ -7,13 +7,14 @@ import {
   OutlookSender
 } from "../models/index.js";
 import { Op } from "sequelize";
+import { DateTime } from "luxon";
 import { getRabbitChannel as getChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
 
 const log = (level, message, meta = {}) =>
   console.log(
     JSON.stringify({
-      ts: new Date().toISOString(),
+      ts: DateTime.now().toISO(),
       service: "active-warmup-monitor-producer",
       level,
       message,
@@ -30,7 +31,7 @@ async function runMonitorProducerTick() {
     log("INFO", "🔍 Warmup monitoring producer tick started");
 
     const channel = await getChannel();
-    const fifteenMinsAgo = new Date(Date.now() - 15 * 60 * 1000);
+    const fifteenMinsAgo = DateTime.now().minus({ minutes: 15 }).toJSDate();
 
     const queryOptions = {
         where: {
@@ -68,7 +69,7 @@ async function runMonitorProducerTick() {
     for (const item of allToEnqueue) {
         // 1. Mark as "Checked" immediately to prevent re-fetch in next producer tick
         await item.model.update(
-            { lastWarmupRescueAt: new Date() },
+            { lastWarmupRescueAt: DateTime.now().toJSDate() },
             { where: { id: item.id } }
         );
 

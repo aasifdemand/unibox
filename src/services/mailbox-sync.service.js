@@ -7,6 +7,7 @@ import { emitToUser } from "../utils/event-broadcaster.js";
 import { createImapConnection, flattenBoxes } from "../utils/imap-helper.js";
 import { simpleParser } from "mailparser";
 import util from "util";
+import { DateTime } from "luxon";
 
 /**
  * MailboxSyncService
@@ -37,7 +38,7 @@ class MailboxSyncService {
       const folders = await this.syncFolders(sender, senderType);
       
       // Update Sync Timestamp early to provide feedback
-      await sender.update({ lastInboxSyncAt: new Date() });
+      await sender.update({ lastInboxSyncAt: DateTime.now().toJSDate() });
       emitToUser(sender.userId, 'mailbox_synced', {
         senderId: sender.id,
         senderType,
@@ -78,7 +79,7 @@ class MailboxSyncService {
       }
 
       // Final Heartbeat Update
-      if (sender) await sender.update({ lastInboxSyncAt: new Date() });
+      if (sender) await sender.update({ lastInboxSyncAt: DateTime.now().toJSDate() });
       console.log(`[MailboxSync] Full sync completed for ${senderType}:${senderId}`);
       
       // Notify UI
@@ -94,7 +95,7 @@ class MailboxSyncService {
       // Even on error, update timestamp if we reached this point
       if (sender) {
         try {
-          await sender.update({ lastInboxSyncAt: new Date() });
+          await sender.update({ lastInboxSyncAt: DateTime.now().toJSDate() });
           emitToUser(sender.userId, 'mailbox_synced', { senderId: sender.id, senderType });
         } catch {
           // Ignore secondary update errors
@@ -219,7 +220,7 @@ class MailboxSyncService {
           subject: headers["Subject"] || "",
           from: headers["From"] || "",
           to: headers["To"] || "",
-          date: new Date(headers["Date"] || Date.now()),
+          date: headers["Date"] ? DateTime.fromRFC2822(headers["Date"]).toJSDate() : DateTime.now().toJSDate(),
           snippet: full.data.snippet || "",
           isRead: !full.data.labelIds?.includes("UNREAD"),
         });
@@ -301,7 +302,7 @@ class MailboxSyncService {
           subject: msg.subject || "",
           from: msg.from?.emailAddress?.address || "",
           to: msg.toRecipients?.map(r => r.emailAddress?.address).join(", ") || "",
-          date: new Date(msg.receivedDateTime),
+          date: DateTime.fromISO(msg.receivedDateTime).toJSDate(),
           snippet: msg.bodyPreview || "",
           isRead: msg.isRead,
         });
@@ -314,7 +315,7 @@ class MailboxSyncService {
 
     // Update folder sync timestamp
     if (folder.update) {
-      await folder.update({ lastSyncAt: new Date() });
+      await folder.update({ lastSyncAt: DateTime.now().toJSDate() });
     }
   }
 
@@ -384,7 +385,7 @@ class MailboxSyncService {
                   subject: parsed.subject || "",
                   from: parsed.from?.text || "",
                   to: parsed.to?.text || "",
-                  date: parsed.date || new Date(),
+                  date: parsed.date ? DateTime.fromJSDate(parsed.date).toJSDate() : DateTime.now().toJSDate(),
                   snippet: "",
                   isRead: (attributes?.flags || []).includes('\\Seen'),
                 });

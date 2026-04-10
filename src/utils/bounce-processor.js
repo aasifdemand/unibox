@@ -2,6 +2,7 @@ import Email from "../models/email.model.js";
 import CampaignRecipient from "../models/campaign-recipient.model.js";
 import GlobalEmailRegistry from "../models/global-email-registry.model.js";
 import { Campaign } from "../models/index.js";
+import { DateTime } from "luxon";
 
 /**
  * BounceProcessor handles incoming bounce notifications from providers (SES, SendGrid, Mailgun).
@@ -21,7 +22,7 @@ export class BounceProcessor {
       // 1. Update Email status
       await email.update({
         status: "bounced",
-        bouncedAt: new Date(),
+        bouncedAt: DateTime.now().toJSDate(),
         bounceType: type,
         bounceReason: reason,
       });
@@ -40,7 +41,7 @@ export class BounceProcessor {
           normalizedEmail: email.recipientEmail.toLowerCase(),
           userId: email.userId,
           verificationStatus: "invalid", // Treat as dead
-          lastSeenAt: new Date(),
+          lastSeenAt: DateTime.now().toJSDate(),
         });
       }
 

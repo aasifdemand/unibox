@@ -16,6 +16,7 @@ import CampaignRecipient from "../models/campaign-recipient.model.js";
 import BounceEvent from "../models/bounce-event.model.js";
 import { emitToUser } from "../utils/event-broadcaster.js";
 import sequelize from "../config/db.js";
+import { DateTime } from "luxon";
 
 import { getValidMicrosoftToken } from "../utils/get-valid-microsoft-token.js";
 import { refreshGoogleToken } from "../utils/refresh-google-token.js";
@@ -25,6 +26,8 @@ import { syncLead } from "../services/crm-sync.service.js";
 import { syncLeadToAllCRMs } from "../services/crm-sync.provider.js";
 import { classifyIntent } from "../services/ai.service.js";
 import { getProxyForEmail } from "../utils/proxy-resolver.js";
+import { QUEUES } from "../queues/queues.js";
+import { getRabbitChannel } from "../queues/rabbit.js";
 
 /* =========================
    LOGGER
@@ -33,7 +36,7 @@ import { getProxyForEmail } from "../utils/proxy-resolver.js";
 const log = (level, message, meta = {}) =>
   console.log(
     JSON.stringify({
-      ts: new Date().toISOString(),
+      ts: DateTime.now().toISO(),
       service: "reply-ingestion",
       level,
       message,
@@ -61,8 +64,9 @@ async function processReply({ sender, email, reply }) {
 
     if (exists) return;
 
+    let replyEventId = null;
     await sequelize.transaction(async (t) => {
-      await ReplyEvent.create({
+      const event = await ReplyEvent.create({
         emailId: email.id,
         campaignId: email.campaignId,
         recipientId: email.recipientId,
@@ -73,14 +77,15 @@ async function processReply({ sender, email, reply }) {
         providerMessageId: reply.messageId,
         providerThreadId: reply.threadId,
         providerConversationId: reply.conversationId,
-        receivedAt: reply.receivedAt || new Date(),
+        receivedAt: reply.receivedAt || DateTime.now().toJSDate(),
         metadata: reply.headers || {},
       }, { transaction: t });
+      replyEventId = event.id;
 
       // Update email
       await email.update({
         status: "replied",
-        repliedAt: reply.receivedAt || new Date(),
+        repliedAt: reply.receivedAt || DateTime.now().toJSDate(),
       }, { transaction: t });
 
       // Update recipient status and stop further steps
@@ -115,18 +120,24 @@ async function processReply({ sender, email, reply }) {
       campaignId: email.campaignId,
     });
 
-    // 🏛️ SYNC LEAD TO CRM WITH AI INTENT DETECTION
+    // 🏛️ SYNC LEAD TO CRM + ENQUEUE AI INTENT DETECTION
     const campaignData = await Campaign.findByPk(email.campaignId, { attributes: ['userId'] });
     if (campaignData) {
-      // Use AI to classify the sentiment of the reply
-      const intent = await classifyIntent(reply.body).catch(() => "replied");
+      // Offload AI classification to separate worker to avoid sync lag
+      const channel = await getRabbitChannel();
+      await channel.assertQueue(QUEUES.AI_CLASSIFY, { durable: true });
+      channel.sendToQueue(QUEUES.AI_CLASSIFY, Buffer.from(JSON.stringify({
+        replyEventId,
+        body: reply.bodySnipped || reply.body
+      })), { persistent: true });
 
-      syncLead(campaignData.userId, email.recipientEmail, "replied", intent).catch(e =>
+      log("DEBUG", "🤖 Enqueued AI classification task", { replyEventId });
+
+      syncLead(campaignData.userId, email.recipientEmail, "replied", "replied").catch(e =>
         log("ERROR", "Failed to sync lead to CRM on reply", { error: e.message })
       );
 
       syncLeadToAllCRMs(campaignData.userId, email.recipientEmail, "replied", {
-        custom_intent: intent,
         recent_reply_body: reply.bodySnipped || reply.body
       }).catch(e => log("ERROR", "Failed to sync lead to external CRM on reply", { error: e.message }));
     }
@@ -264,7 +275,7 @@ async function ingestGmailReplies(sender) {
         from,
         subject: headers["Subject"] || "",
         body,
-        receivedAt: new Date(headers["Date"] || Date.now()),
+        receivedAt: headers["Date"] ? DateTime.fromHTTP(headers["Date"]).toJSDate() : DateTime.now().toJSDate(),
         messageId: msg.id,
         threadId,
         conversationId: threadId,
@@ -339,7 +350,7 @@ async function ingestOutlookReplies(sender) {
         from,
         subject: msg.subject,
         body: msg.body?.content || "",
-        receivedAt: new Date(msg.receivedDateTime),
+        receivedAt: DateTime.fromISO(msg.receivedDateTime).toJSDate(),
         messageId: msg.id,
         threadId: conversationId,
         conversationId,
@@ -409,7 +420,7 @@ async function ingestImapReplies(sender) {
           }
 
           // Search for unseen OR recent messages (last 24h) to be safe
-          const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+          const since = DateTime.now().minus({ hours: 24 }).toJSDate();
           imap.search([["OR", "UNSEEN", ["SINCE", since]]], (err, results) => {
             if (err || !results?.length) {
               log("DEBUG", "No SMTP replies found in search");
@@ -484,7 +495,7 @@ async function ingestImapReplies(sender) {
                       emailId: matchedEmail.id,
                       bounceType: "complaint",
                       reason: "Recipient marked as SPAM via provider button (ARF detected)",
-                      occurredAt: parsed.date || new Date(),
+                      occurredAt: parsed.date ? DateTime.fromJSDate(parsed.date).toJSDate() : DateTime.now().toJSDate(),
                     });
 
                     // Also auto-unsubscribe the recipient
@@ -505,7 +516,7 @@ async function ingestImapReplies(sender) {
                       from,
                       subject: parsed.subject || "",
                       body,
-                      receivedAt: parsed.date || new Date(),
+                      receivedAt: parsed.date ? DateTime.fromJSDate(parsed.date).toJSDate() : DateTime.now().toJSDate(),
                       messageId: parsed.messageId || parsed.messageId,
                       threadId: parsed.messageId,
                       conversationId: parsed.messageId,
@@ -527,7 +538,7 @@ async function ingestImapReplies(sender) {
 
             fetch.once("end", async () => {
               await sender.update({
-                lastReplyCheckAt: new Date(),
+                lastReplyCheckAt: DateTime.now().toJSDate(),
               });
 
               imap.end();
@@ -587,34 +598,64 @@ async function checkAllSenders() {
   running = true;
 
   try {
+    const twentyMinsAgo = DateTime.now().minus({ minutes: 20 }).toJSDate();
     const activeCampaignFilter = {
       model: Campaign,
-      required: true, // INNER JOIN: only senders with at least one matching campaign
+      required: true,
       where: { status: "running" },
-      attributes: [], // We don't need campaign data, just the filter
+      attributes: [],
     };
 
-    const [gmail, outlook, smtpSenders] = await Promise.all([
-      GmailSender.findAll({
-        where: { isVerified: true },
-        include: [activeCampaignFilter],
-      }),
-      OutlookSender.findAll({
-        where: { isVerified: true },
-        include: [activeCampaignFilter],
-      }),
-      SmtpSender.findAll({
-        where: { isVerified: true, isActive: true },
-        include: [activeCampaignFilter],
-      }),
-    ]);
+    const queryOptions = {
+      where: {
+        isVerified: true,
+        [Op.or]: [
+          { lastReplyCheckAt: { [Op.lt]: twentyMinsAgo } },
+          { lastReplyCheckAt: null }
+        ]
+      },
+      include: [activeCampaignFilter],
+      limit: 50 // Lease 50 per tick
+    };
 
-    // Run each provider in parallel batches of BATCH_SIZE
-    await runInBatches(gmail, ingestGmailReplies);
-    await runInBatches(outlook, ingestOutlookReplies);
-    await runInBatches(smtpSenders, ingestImapReplies);
+    const providers = [
+      { model: GmailSender, type: 'gmail', fn: ingestGmailReplies },
+      { model: OutlookSender, type: 'outlook', fn: ingestOutlookReplies },
+      { model: SmtpSender, type: 'smtp', fn: ingestImapReplies, where: { ...queryOptions.where, isActive: true } }
+    ];
+
+    for (const p of providers) {
+      // Atomic Lease
+      const batch = await sequelize.transaction(async (t) => {
+        const results = await p.model.findAll({
+          where: p.where || queryOptions.where,
+          include: p.include || queryOptions.include,
+          limit: queryOptions.limit,
+          lock: true,
+          skipLocked: true,
+          transaction: t
+        });
+
+        if (results.length > 0) {
+          await p.model.update(
+            { lastReplyCheckAt: DateTime.now().toJSDate() },
+            {
+              where: { id: { [Op.in]: results.map(r => r.id) } },
+              transaction: t
+            }
+          );
+        }
+        return results;
+      });
+
+      if (batch.length > 0) {
+        log("INFO", `🔓 Leased ${batch.length} ${p.type} senders for reply ingestion`);
+        await runInBatches(batch, p.fn);
+      }
+    }
+
   } catch (err) {
-    log("ERROR", "Reply ingestion failed", { error: err.message });
+    log("ERROR", "Reply ingestion failure during lease cycle", { error: err.message });
   } finally {
     running = false;
   }
