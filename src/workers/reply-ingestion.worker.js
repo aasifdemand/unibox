@@ -24,7 +24,6 @@ import { tryCompleteCampaign } from "../utils/campaign-completion.checker.js";
 import { createImapConnection } from "../utils/imap-helper.js";
 import { syncLead } from "../services/crm-sync.service.js";
 import { syncLeadToAllCRMs } from "../services/crm-sync.provider.js";
-import { classifyIntent } from "../services/ai.service.js";
 import { getProxyForEmail } from "../utils/proxy-resolver.js";
 import { QUEUES } from "../queues/queues.js";
 import { getRabbitChannel } from "../queues/rabbit.js";

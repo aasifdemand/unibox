@@ -19,6 +19,8 @@
     "warmup-monitor": "node src/workers/active-warmup-monitor.worker.js",
     "warmup-processor" : "node src/workers/warmup-processor.worker.js",
     "es-sync": "node src/workers/elasticsearch-sync.worker.js",
+    "ai-classifier": "node src/workers/ai-classifier.worker.js",
+    "maintenance": "node src/workers/maintenance.worker.js",
     "lint": "eslint . --max-warnings=0",
     "lint:fix": "eslint . --fix"
   },
