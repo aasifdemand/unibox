@@ -16,6 +16,11 @@ export function renderTemplate(template, variables = {}) {
 
   const allVars = { ...systemVars, ...variables };
 
+  // 0b. Inject %signature% — replace with sender's HTML signature or remove the token
+  //     Must run BEFORE variable substitution so the signature itself can contain {{variables}}
+  const signatureHtml = allVars.__signature__ || "";
+  template = template.replace(/%signature%/gi, signatureHtml);
+
   // 1. Handle Spintax: {Option A|Option B|Option C}
   const spintaxRegex = /{([^{}]+?)}/g;
   while (template.match(spintaxRegex)) {

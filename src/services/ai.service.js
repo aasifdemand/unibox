@@ -73,8 +73,8 @@ const callOllama = async (prompt, jsonMode = false) => {
  * Generate a sequence of emails based on a goal and tone.
  */
 export const generateSequence = async (goal, tone = "professional", stepsCount = 3, variables = []) => {
-  // Incremented version to v2 to invalidate old incompatible cached sequences
-  const cacheKey = `ai:seq:v2:${Buffer.from(`${goal}:${tone}:${stepsCount}`).toString("base64")}`;
+  // Incremented version to v3 to invalidate old incompatible cached sequences
+  const cacheKey = `ai:seq:v3:${Buffer.from(`${goal}:${tone}:${stepsCount}`).toString("base64")}`;
   
   try {
     const cached = await redis.get(cacheKey);
@@ -99,11 +99,11 @@ Format Requirements:
 - Return ONLY a raw JSON array of objects.
 - Keys: "subject" (string), "body" (string).
 - NO preamble, NO markdown wrapping, NO explanations.
-- Body must include "{{sender_name}}" at the end.
+- DO NOT include any sign-off, signature, or closing line (e.g. no "Best regards").
 - Use \\n for newlines in the JSON body string.
 
 Example Output:
-[{"subject":"Check this out","body":"Hi {{first_name}},\\n\\nI saw your work at {{company}}...\\n\\nBest,\\n{{sender_name}}"}]`;
+[{"subject":"Check this out","body":"Hi {{first_name}},\\n\\nI saw your work at {{company}}..."}]`;
 
   try {
     console.log(`🚀 Generating sequence (${OLLAMA_MODEL})...`);
@@ -166,7 +166,7 @@ Variables: ${varString}
 Constraints:
 - Step 1: Hook & Solution focus.
 - Steps 2+: Short (2 sentences) thread follow-ups.
-- ALWAYS sign off with {{sender_name}}.
+- DO NOT include any sign-off, signature, or closing line.
 - OUTPUT ONLY JSON ARRAY: [{"subject": "...", "body": "..."}]`;
 
   try {

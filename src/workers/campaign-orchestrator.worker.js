@@ -186,17 +186,34 @@ async function startWorker() {
           return channel.ack(msg);
         }
 
+        let senderSignatureHtml = sender.signature || "";
+        
+        // Append designation to the signature if it exists
+        if (sender.designation) {
+          const designationHtml = `<div style="color: #64748b; font-size: 13px; margin-top: 2px;">${sender.designation}</div>`;
+          senderSignatureHtml = senderSignatureHtml ? `${senderSignatureHtml}\n${designationHtml}` : designationHtml;
+        }
+
         const variables = {
           email: recipient.email,
           name: recipient.name || "",
           first_name: (recipient.name || "").split(" ")[0] || "",
+          last_name: (recipient.name || "").split(" ").slice(1).join(" ") || "",
           sender_name: sender.displayName || sender.name || "",
+          sender_designation: sender.designation || "",
+          __signature__: senderSignatureHtml,
           ...recipient.metadata
         };
 
+        // If the template does NOT contain a %signature% token, auto-append the signature at the end
+        const htmlBody = stepConfig.htmlBody || "";
+        const bodyWithSignature = senderSignatureHtml && !/%signature%/i.test(htmlBody)
+          ? htmlBody + `\n${senderSignatureHtml}`
+          : htmlBody;
+
         const emailId = crypto.randomUUID();
         const renderedSubject = renderTemplate(stepConfig.subject, variables);
-        const renderedHtml = injectTracking(renderTemplate(stepConfig.htmlBody, variables), emailId, {
+        const renderedHtml = injectTracking(renderTemplate(bodyWithSignature, variables), emailId, {
           trackOpens: campaign.trackOpens,
           trackClicks: campaign.trackClicks,
           unsubscribeLink: campaign.unsubscribeLink,

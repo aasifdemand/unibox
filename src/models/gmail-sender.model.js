@@ -222,6 +222,10 @@ const GmailSender = sequelize.define(
       defaultValue: 1,
     },
 
+    designation: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
     signature: {
       type: DataTypes.TEXT,
       allowNull: true,

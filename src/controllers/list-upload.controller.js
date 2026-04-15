@@ -470,37 +470,38 @@ const transformRow = (record, mapping = {}) => {
     const domain = extractDomain(normalizedEmail);
     if (!domain) return null;
 
-    // 2. Extract Name
+    // 2. Extract Name (try firstName+lastName combination first, then dedicated name column)
     let name = null;
     if (mapping.name) {
       name = record[mapping.name] || record[slugify(mapping.name)];
     }
+    // Try to build name from firstName/lastName columns
+    if (!name) {
+      const firstNameKey = Object.keys(record).find(k => slugify(k) === "firstname");
+      const lastNameKey = Object.keys(record).find(k => slugify(k) === "lastname");
+      const firstName = firstNameKey ? String(record[firstNameKey]).trim() : "";
+      const lastName = lastNameKey ? String(record[lastNameKey]).trim() : "";
+      if (firstName || lastName) name = [firstName, lastName].filter(Boolean).join(" ");
+    }
     if (!name) name = findNameField(record);
 
-    // 3. Extract Metadata
+    // 3. Build metadata: store ALL columns under their slugified key.
+    //    This ensures every CSV column (role, goal, resourceLink, firstName, etc.)
+    //    is available as a {{placeholder}} at send-time via recipient.metadata.
     const metadata = {};
-    
-    // Explicitly add mapped fields to metadata if they exist
-    const explicitMeta = ['company', 'phone', 'title', 'jobTitle', 'city', 'country', 'firstName', 'lastName'];
-    explicitMeta.forEach(field => {
-      const key = mapping[field];
-      if (key) {
-        const val = record[key] || record[slugify(key)];
-        if (val !== undefined && val !== null) {
-          metadata[field] = String(val).trim();
-        }
-      }
+
+    Object.keys(record).forEach((key) => {
+      const slg = slugify(key);
+      const val = record[key];
+      if (val === undefined || val === null || String(val).trim() === "") return;
+      // Skip pure email columns (avoid duplicating the email address in metadata)
+      if (slg === "email" || slg === "emailaddress" || slg === "mail") return;
+      metadata[slg] = String(val).trim();
     });
 
-    // Also include all other original fields as metadata (excluding already handled ones)
-    Object.keys(record).forEach((key) => {
-      const slug = slugify(key);
-      // Skip fields that are core or already mapped
-      const isMapped = Object.values(mapping).some(v => v === key || slugify(v) === slug);
-      if (!isMapped && !slug.includes("email") && !slug.includes("name")) {
-        metadata[slug] = record[key];
-      }
-    });
+    // Add convenient underscore aliases so {{first_name}} works alongside {{firstname}}
+    if (metadata.firstname && !metadata.first_name) metadata.first_name = metadata.firstname;
+    if (metadata.lastname && !metadata.last_name) metadata.last_name = metadata.lastname;
 
     return {
       rawEmail: emailValue,
@@ -812,6 +813,7 @@ export const getUserBatches = asyncHandler(async (req, res) => {
       "validRecords",
       "duplicateRecords",
       "failedRecords",
+      "mapping",
       "createdAt",
       "updatedAt",
     ],
