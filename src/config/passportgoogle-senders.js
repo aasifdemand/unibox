@@ -34,10 +34,12 @@ passport.use(
 
         // Extract user ID from state
         const state = req.query.state || "";
-        const userId = state.replace("sender-", "");
+        const isSystemAccount = state.endsWith("-system");
+        const userId = state.replace("sender-", "").replace("-system", "");
 
         return done(null, {
           userId,
+          isSystemAccount,
           email: profile.emails[0].value,
           displayName: profile.displayName,
           accessToken,

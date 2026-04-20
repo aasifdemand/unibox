@@ -176,20 +176,23 @@ router.put("/:senderId", protect, updateSender);
  */
 // Change this in your /senders/oauth/gmail route:
 router.get("/oauth/gmail", protect, (req, res, next) => {
-  const state = `sender-${req.user.id}`;
+  const isSystemAccount = req.query.isSystemAccount === 'true';
+  const state = `sender-${req.user.id}${isSystemAccount ? '-system' : ''}`;
 
   passportGoogle.authenticate("google-sender", {
     scope: [
       "profile",
       "email",
-      "https://www.googleapis.com/auth/gmail.readonly", // For searching and reading
-      "https://www.googleapis.com/auth/gmail.modify", // For marking as read
+      "https://www.googleapis.com/auth/gmail.readonly",
+      "https://www.googleapis.com/auth/gmail.modify",
       "https://www.googleapis.com/auth/gmail.send",
     ],
     session: false,
-    prompt: "consent", // ← CHANGE from "select_account" to "consent"
-    accessType: "offline", // This is already correct
+    prompt: "select_account consent",
+    accessType: "offline",
+    includeGrantedScopes: false,
     state: state,
+    hostedDomain: "*",
   })(req, res, next);
 });
 /**
@@ -221,9 +224,16 @@ router.get(
         const refreshToken = userData.refreshToken;
         const googleId = userData.googleId || userData.profile?.id;
         const userId = userData.userId;
+        const isSystemAccount = userData.isSystemAccount || false;
 
         if (!email) return res.redirect(`${frontendUrl}/dashboard/mailboxes?error=no_email`);
         if (!userId) return res.redirect(`${frontendUrl}/dashboard/mailboxes?error=no_user_id`);
+
+        // RESTRICTION: Workspace accounts only (No @gmail.com or @googlemail.com)
+        const domain = email.split("@")[1]?.toLowerCase();
+        if (domain === "gmail.com" || domain === "googlemail.com") {
+          return res.redirect(`${frontendUrl}/dashboard/mailboxes?error=workspace_only&message=${encodeURIComponent("Personal Gmail accounts are not supported. Please use a Google Workspace account.")}`);
+        }
 
         // Check if Gmail sender already exists
         const existingSender = await GmailSender.findOne({
@@ -240,6 +250,7 @@ router.get(
             isActive: true,
             googleId,
             lastUsedAt: new Date(),
+            isSystemAccount: isSystemAccount || existingSender.isSystemAccount,
           });
           sender = existingSender;
         } else {
@@ -255,6 +266,7 @@ router.get(
             isVerified: true,
             isActive: true,
             lastUsedAt: new Date(),
+            isSystemAccount: isSystemAccount,
           });
         }
 
@@ -287,6 +299,7 @@ router.get(
  */
 router.get("/oauth/outlook", protect, (req, res, next) => {
   const user = req.user;
+  const isSystemAccount = req.query.isSystemAccount === 'true';
 
   if (!user) {
     return res.status(401).json({
@@ -296,7 +309,7 @@ router.get("/oauth/outlook", protect, (req, res, next) => {
   }
 
   passportMicrosoft.authenticate("microsoft", {
-    prompt: "login", // ✅ Valid values: 'login', 'none', 'consent', 'select_account'
+    prompt: "select_account",
     scope: [
       "openid",
       "profile",
@@ -306,7 +319,7 @@ router.get("/oauth/outlook", protect, (req, res, next) => {
       "Mail.Read",
       "Mail.ReadWrite",
     ],
-    state: `sender-${user.id}`,
+    state: `sender-${user.id}${isSystemAccount ? '-system' : ''}`,
     session: false,
   })(req, res, next);
 });
@@ -335,7 +348,8 @@ router.get(
 
       try {
         const state = req.query.state;
-        const userId = state?.replace("sender-", "");
+        const isSystemAccount = state?.endsWith("-system");
+        const userId = state?.replace("sender-", "").replace("-system", "");
 
         if (!userId) throw new Error("Missing user identification");
 
@@ -359,6 +373,7 @@ router.get(
             microsoftId: profile.id,
             lastUsedAt: new Date(),
             isActive: true,
+            isSystemAccount: isSystemAccount || existingSender.isSystemAccount,
           });
           sender = existingSender;
         } else {
@@ -374,6 +389,7 @@ router.get(
             isVerified: true,
             isActive: true,
             lastUsedAt: new Date(),
+            isSystemAccount: isSystemAccount,
           });
         }
 

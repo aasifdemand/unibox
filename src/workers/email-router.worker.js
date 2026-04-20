@@ -152,7 +152,7 @@ async function startWorker() {
         ========================= */
 
         const health = await SenderHealth.findOne({
-          where: { senderId: email.senderId },
+          where: { mailboxId: email.senderId },
         });
 
         const reputationScore = health?.reputationScore ?? 100;

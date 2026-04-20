@@ -1,4 +1,4 @@
-import { CrmStage, Lead, ListUploadRecord } from "../models/index.js";
+import { CrmStage, Lead, ListUploadRecord, ListUploadBatch } from "../models/index.js";
 
 /**
  * Syncs a contact's position in the CRM pipeline based on activity.
@@ -13,7 +13,12 @@ export const syncLead = async (userId, email, event, category = 'replied') => {
 
     // 1. Find the contact
     const contact = await ListUploadRecord.findOne({
-      where: { normalizedEmail, userId },
+      where: { normalizedEmail },
+      include: [{
+        model: ListUploadBatch,
+        as: 'batch',
+        where: { userId }
+      }]
     });
 
     if (!contact) return; // No global contact, skip CRM sync

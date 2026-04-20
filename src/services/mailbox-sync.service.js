@@ -30,14 +30,23 @@ class MailboxSyncService {
       else if (senderType === 'outlook') sender = await OutlookSender.findByPk(senderId);
       else if (senderType === 'smtp') sender = await SmtpSender.findByPk(senderId);
 
-      if (!sender || !sender.isVerified) {
-        console.error(`[MailboxSync] Sender ${senderId} not found or not verified`);
+      if (!sender) {
+        console.error(`[MailboxSync] Sender ${senderId} not found`);
         return;
       }
 
-      // 1. Sync Folders
+      // 1. Sync Folders (This also validates/refreshes the token)
       const folders = await this.syncFolders(sender, senderType);
       
+      // If we got folders, the account is definitely working/verified
+      if (sender.isVerified === false || sender.verificationError) {
+        await sender.update({ 
+          isVerified: true, 
+          verificationError: null 
+        });
+        console.log(`[MailboxSync] Account status recovered for ${sender.email}`);
+      }
+
       // Update Sync Timestamp early to provide feedback
       await sender.update({ lastInboxSyncAt: DateTime.now().toJSDate() });
       emitToUser(sender.userId, 'mailbox_synced', {
@@ -191,15 +200,15 @@ class MailboxSyncService {
     oauth2Client.setCredentials({ access_token: tokenData.accessToken });
     const gmail = google.gmail({ version: "v1", auth: oauth2Client });
 
-    // Focus strictly on the last 30 days for background sync
-    const thirtyDaysAgo = DateTime.now().minus({ days: 30 }).toISODate();
+    // Focus on the last 180 days for background sync to provide better history
+    const oneEightyDaysAgo = DateTime.now().minus({ days: 180 }).toISODate();
 
     // Fetch message list for this label
     const response = await gmail.users.messages.list({
       userId: "me",
       labelIds: [folder.providerFolderId],
-      q: `after:${thirtyDaysAgo}`,
-      maxResults: 50, 
+      q: `after:${oneEightyDaysAgo}`,
+      maxResults: 100, 
     });
 
     const messages = response.data.messages || [];
@@ -220,6 +229,7 @@ class MailboxSyncService {
         const isLead = await this.checkIfLead(fromEmail);
 
         await MailboxMessage.upsert({
+          userId: sender.userId,
           senderId: sender.id,
           senderType: 'gmail',
           folderId: folder.id,
@@ -292,10 +302,11 @@ class MailboxSyncService {
     const token = await getValidMicrosoftToken(sender);
     if (!token) return;
 
-    const thirtyDaysAgo = DateTime.now().minus({ days: 30 }).toISO();
-    let nextLink = `https://graph.microsoft.com/v1.0/me/mailFolders/${folder.providerFolderId}/messages?$top=50&$select=id,subject,from,toRecipients,receivedDateTime,isRead,bodyPreview,conversationId&$filter=receivedDateTime ge ${thirtyDaysAgo}`;
+    console.log(`[MailboxSync] Fetching recent messages for Outlook folder: ${folder.name}`);
+    const sixMonthsAgo = DateTime.now().minus({ days: 180 }).toISO();
+    let nextLink = `https://graph.microsoft.com/v1.0/me/mailFolders/${folder.providerFolderId}/messages?$top=100&$select=id,subject,from,toRecipients,receivedDateTime,isRead,bodyPreview,conversationId&$filter=receivedDateTime ge ${sixMonthsAgo}`;
     let processedCount = 0;
-    const MAX_SYNC = 100; // Tighter limit for scale
+    const MAX_SYNC = 300; // Expanded limit for better initial sync experience
 
     while (nextLink && processedCount < MAX_SYNC) {
       const response = await axios.get(nextLink, {
@@ -308,6 +319,7 @@ class MailboxSyncService {
         const isLead = await this.checkIfLead(fromEmail);
 
         await MailboxMessage.upsert({
+          userId: sender.userId,
           senderId: sender.id,
           senderType: 'outlook',
           folderId: folder.id,
@@ -328,6 +340,8 @@ class MailboxSyncService {
       // Record next link if it exists
       nextLink = response.data['@odata.nextLink'];
     }
+
+    console.log(`[MailboxSync] Synced ${processedCount} messages for Outlook folder: ${folder.name}`);
 
     // Update folder sync timestamp
     if (folder.update) {
@@ -380,18 +394,18 @@ class MailboxSyncService {
           return resolve();
         }
 
-        // Fetch messages from last 30 days
-        const thirtyDaysAgo = DateTime.now().minus({ days: 30 }).toJSDate();
+        // Fetch messages from last 180 days
+        const searchDate = DateTime.now().minus({ days: 180 }).toJSDate();
         
         // IMAP SEARCH SINCE expects an actual date object
-        imap.search([['SINCE', thirtyDaysAgo]], (err, results) => {
+        imap.search([['SINCE', searchDate]], (err, results) => {
           if (err || !results || results.length === 0) {
             imap.end();
             return resolve();
           }
 
-          // Fetch only the latest 50 within this search window
-          const latest = results.slice(-50);
+          // Fetch only the latest 150 within this search window
+          const latest = results.slice(-150);
           const f = imap.fetch(latest, { bodies: 'HEADER.FIELDS (FROM TO SUBJECT DATE)' });
 
         f.on('message', (msg, seqno) => {
@@ -406,6 +420,7 @@ class MailboxSyncService {
                 const isLead = await this.checkIfLead(fromEmail);
 
                 await MailboxMessage.upsert({
+                  userId: sender.userId,
                   senderId: sender.id,
                   senderType: 'smtp',
                   folderId: folder.id,

@@ -53,6 +53,11 @@ export const createSender = asyncHandler(async (req, res) => {
   const emailLower = email.toLowerCase();
   const domain = emailLower.split("@")[1];
 
+  // RESTRICTION: No personal Gmail accounts allowed
+  if (domain === "gmail.com" || domain === "googlemail.com") {
+    throw new AppError("Personal Gmail accounts are not supported for campaigns. Please use a Google Workspace account.", 400);
+  }
+
   // Check duplicates across all sender types
   const [existingGmail, existingOutlook, existingSmtp] = await Promise.all([
     GmailSender.findOne({ where: { email: emailLower, userId: req.user.id } }),
@@ -163,6 +168,11 @@ export const bulkCreateSenders = asyncHandler(async (req, res) => {
 
       const emailLower = email.toLowerCase();
       const domain = emailLower.split("@")[1];
+
+      // RESTRICTION: No personal Gmail accounts allowed
+      if (domain === "gmail.com" || domain === "googlemail.com") {
+        throw new Error(`Personal Gmail account (${emailLower}) is not supported. Use Workspace IDs.`);
+      }
 
       const existing = await SmtpSender.findOne({
         where: { email: emailLower, userId }

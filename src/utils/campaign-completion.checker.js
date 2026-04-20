@@ -35,13 +35,7 @@ export async function tryCompleteCampaign(campaignId, options = {}) {
 
   if (activeRecipients > 0) return false;
 
-  const sevenDaysAgo = DateTime.now().minus({ days: 7 }).toJSDate();
-  const recentlyCompletedCount = await CampaignRecipient.count({
-    where: { campaignId, status: "completed", lastSentAt: { [Op.gte]: sevenDaysAgo } },
-    transaction
-  });
-
-  if (recentlyCompletedCount > 0) return false;
+  // Removed 7-day delay check. Campaign should complete once all work is done.
 
   const [updated] = await Campaign.update(
     { status: "completed", completedAt: DateTime.now().toJSDate() },

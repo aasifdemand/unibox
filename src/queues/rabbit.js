@@ -9,6 +9,8 @@ export async function getRabbitChannel() {
       // Basic check if connection is still healthy
       return channel;
     } catch (e) {
+      console.log("error in rabbitmq connection: ", e);
+
       channel = null;
       connection = null;
     }
@@ -16,14 +18,16 @@ export async function getRabbitChannel() {
 
   try {
     console.log("🐇 Connecting to RabbitMQ...");
-    connection = await amqp.connect(process.env.RABBITMQ_URL);
-    
+    connection = await amqp.connect(process.env.RABBITMQ_URL, {
+      heartbeat: 60,
+    });
+
     connection.on("error", (err) => {
       console.error("🐇 RabbitMQ Connection Error:", err);
       connection = null;
       channel = null;
     });
-    
+
     connection.on("close", () => {
       console.error("🐇 RabbitMQ Connection Closed. Resetting channel.");
       connection = null;

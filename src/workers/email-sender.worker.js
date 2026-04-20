@@ -296,7 +296,7 @@ async function startWorker() {
         ========================= */
 
         const health = await SenderHealth.findOne({
-          where: { senderId: sender.id },
+          where: { mailboxId: sender.id },
         });
 
         if (health?.blacklisted) throw new Error("Sender IP blacklisted");
@@ -357,6 +357,8 @@ async function startWorker() {
         let providerMessageId = messageId;
         let providerThreadId = null;
         let providerConversationId = null;
+        let internetMessageId = null;
+
 
         if (senderType === "smtp") {
           const transporter = getOrCreateTransporter(sender, proxy);
@@ -498,6 +500,8 @@ async function startWorker() {
           providerMessageId = res.data.id;
           providerThreadId = res.data.threadId;
           providerConversationId = res.data.threadId; // Gmail uses threadId for threading
+          internetMessageId = res.data.id; // Gmail ID is its persistent identifier
+
         }
 
         if (senderType === "outlook") {
@@ -562,6 +566,12 @@ async function startWorker() {
           providerMessageId = res.data.id;
           providerConversationId = res.data.conversationId;
           providerThreadId = res.data.conversationId; // Map to threadId for unified tracking
+          
+          log("DEBUG", "Captured Outlook Identifiers", {
+            providerMessageId,
+            providerConversationId,
+            internetMessageId: res.data.internetMessageId
+          });
 
           // 2. Send the message
           await axios.post(
@@ -569,6 +579,12 @@ async function startWorker() {
             {},
             axiosConfig
           );
+
+          // Update message with internetMessageId if it wasn't returned in the first call
+          // (Sometimes it's only finalized after send)
+          internetMessageId = res.data.internetMessageId;
+
+
         }
 
         /* =========================
@@ -582,6 +598,10 @@ async function startWorker() {
             providerMessageId,
             providerThreadId,
             providerConversationId,
+            metadata: {
+              ...emailRecord.metadata,
+              internetMessageId
+            }
           });
 
           await EmailEvent.create({

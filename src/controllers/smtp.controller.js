@@ -755,7 +755,7 @@ export const syncSmtpMailbox = asyncHandler(async (req, res) => {
   const userId = req.user.id;
 
   const sender = await SmtpSender.findOne({
-    where: { id: mailboxId, userId, isActive: true },
+    where: { id: mailboxId, userId },
   });
   if (!sender) throw new AppError("SMTP mailbox not found", 404);
 
@@ -1466,6 +1466,27 @@ export const batchSmtpOperations = asyncHandler(async (req, res) => {
       }
 
       await sender.update({ lastUsedAt: new Date() });
+      
+      // Instant DB Sync: Remove deleted messages from local database
+      if (operation === "delete") {
+        try {
+          const deletedIds = results
+            .filter(r => r.status === "deleted")
+            .map(r => r.messageId);
+
+          if (deletedIds.length > 0) {
+            await MailboxMessage.destroy({
+              where: {
+                senderId: mailboxId,
+                providerMessageId: { [Op.in]: deletedIds }
+              }
+            });
+          }
+        } catch (dbError) {
+          console.error("SMTP batch delete DB sync error:", dbError);
+        }
+      }
+
       await Promise.all([
         deleteCachedData(generateCacheKey("smtp", mailboxId, "messages", "*")),
         deleteCachedData(generateCacheKey("smtp", mailboxId, "folders")),

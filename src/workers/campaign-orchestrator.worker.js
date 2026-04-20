@@ -2,6 +2,17 @@ import "../models/index.js";
 import { initGlobalErrorHandlers } from "../utils/error-handler.js";
 initGlobalErrorHandlers();
 
+// CRITICAL DEBUG HANDLER: Capture errors before the process dies
+process.on('uncaughtException', (err) => {
+  console.error("!!! CRITICAL WORKER ERROR:", err.message);
+  console.error(err.stack);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error("!!! UNHANDLED REJECTION:", reason);
+});
+
 import Campaign from "../models/campaign.model.js";
 import CampaignRecipient from "../models/campaign-recipient.model.js";
 import CampaignStep from "../models/campaign-step.model.js";
@@ -10,6 +21,7 @@ import Email from "../models/email.model.js";
 import GlobalEmailRegistry from "../models/global-email-registry.model.js";
 import SenderHealth from "../models/sender-health.model.js";
 import { getSenderWithType } from "../models/index.js";
+import { checkSenderQuota } from "../utils/sender-quota.js";
 
 import { getRabbitChannel as getChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
@@ -58,12 +70,18 @@ function nextSendableTime(campaign) {
   return DateTime.now().setZone(tz).plus({ days: 1 }).set({ hour: startH, minute: startM }).toJSDate();
 }
 
-const log = (level, message, meta = {}) =>
-  console.log(JSON.stringify({ ts: DateTime.now().toISO(), service: "campaign-orchestrator", level, message, ...meta }));
+const log = (level, message, meta = {}) => {
+  try {
+    console.log(JSON.stringify({ ts: DateTime.now().toISO(), service: "campaign-orchestrator", level, message, ...meta }));
+  } catch (err) {
+    console.log(`[${level}] ${message} (Meta omitted due to stringify error),${err?.message}`);
+  }
+};
 
 
 
 async function startWorker() {
+  log("INFO", "🚀 Campaign Orchestrator Worker booting up...");
   let channel;
   try {
     channel = await getChannel();
@@ -72,10 +90,23 @@ async function startWorker() {
     channel.prefetch(10);
 
     channel.consume(QUEUES.CAMPAIGN_SEND, async (msg) => {
-      if (!msg) return;
-      const { campaignId, recipientId } = JSON.parse(msg.content.toString());
+      if (!msg || !msg.content) {
+        if (msg) channel.ack(msg);
+        return;
+      }
 
       try {
+        let payload;
+        try {
+          payload = JSON.parse(msg.content.toString());
+        } catch (parseErr) {
+          log("ERROR", "⚠️ Failed to parse message JSON. Skipping corrupted task.", { raw: msg.content.toString(), err: parseErr?.message });
+          return channel.ack(msg);
+        }
+
+        const { campaignId, recipientId } = payload;
+        log("INFO", "📥 Received campaign send task", { campaignId, recipientId });
+
         const campaign = await Campaign.findByPk(campaignId);
         const recipient = await CampaignRecipient.findByPk(recipientId);
 
@@ -163,35 +194,91 @@ async function startWorker() {
           }
         }
 
-        // Shuffled sender selection
+        // Shuffled sender selection with detailed health tracking
         let senderIdToUse = null;
         let sender = null;
+        const unhealthySenders = []; // Track { email, reason }
+        const quotaReachedSenders = []; // Track { email }
+
         const candidateIds = campaign.senderIds && campaign.senderIds.length > 0
-          ? [...campaign.senderIds].sort(() => Math.random() - 0.5) 
+          ? [...campaign.senderIds].sort(() => Math.random() - 0.5)
           : [campaign.senderId].filter(id => id != null);
 
         for (const sId of candidateIds) {
           const candidateSender = await getSenderWithType(sId, campaign.senderType);
-          if (!candidateSender || !candidateSender.isVerified || !candidateSender.isActive) continue;
+
+          if (!candidateSender) {
+            unhealthySenders.push({ email: `ID:${sId}`, reason: "Not found" });
+            continue;
+          }
+
+          if (!candidateSender.isVerified) {
+            unhealthySenders.push({ email: candidateSender.email, reason: "Account Disconnected" });
+            continue;
+          }
+
+          if (candidateSender.isActive === false) {
+            unhealthySenders.push({ email: candidateSender.email, reason: "Account Disabled" });
+            continue;
+          }
+
           const health = await SenderHealth.findOne({ where: { mailboxId: sId } });
-          if (health?.blacklisted) continue;
+          if (health?.blacklisted) {
+            unhealthySenders.push({ email: candidateSender.email, reason: "Blacklisted (High Bounces)" });
+            continue;
+          }
+
+          // Check Daily Quota
+          const quotaStatus = await checkSenderQuota(candidateSender, campaign.senderType);
+          if (quotaStatus.isAtQuota) {
+            quotaReachedSenders.push({ email: candidateSender.email });
+            continue;
+          }
+
           senderIdToUse = sId;
           sender = candidateSender;
           break;
         }
 
         if (!sender) {
-          log("WARN", "🚨 No healthy senders. Auto-pausing campaign.", { campaignId });
-          await campaign.update({ status: "paused", pauseReason: "No healthy mailboxes available." });
+          // Case A: All senders hit their limit -> RESCHEDULE for tomorrow
+          if (quotaReachedSenders.length > 0 && unhealthySenders.length === 0) {
+            const tomorrow = DateTime.now().setZone(campaign.timezone || "UTC").plus({ days: 1 }).set({
+              hour: parseInt((campaign.startTime || "09:00").split(":")[0]),
+              minute: parseInt((campaign.startTime || "09:00").split(":")[1])
+            }).toJSDate();
+
+            log("INFO", "⏳ All senders hit daily limits. Rescheduling for tomorrow.", { campaignId, senders: quotaReachedSenders.map(s => s.email) });
+            await recipient.update({ nextRunAt: tomorrow });
+            return channel.ack(msg);
+          }
+
+          // Case B: Truly unhealthy senders -> PAUSE with detailed reasons
+          const reasonsArray = [
+            ...unhealthySenders.map(u => `${u.email}: ${u.reason}`),
+            ...quotaReachedSenders.map(q => `${q.email}: Daily Limit Reached`)
+          ];
+          const fullReason = `Auto-paused: No healthy senders available. Details: ${reasonsArray.join(", ")}`;
+
+          log("WARN", "🚨 No healthy senders. Auto-pausing campaign.", { campaignId, details: reasonsArray });
+          await campaign.update({ status: "paused", pauseReason: fullReason });
           return channel.ack(msg);
         }
 
-        let senderSignatureHtml = sender.signature || "";
-        
-        // Append designation to the signature if it exists
-        if (sender.designation) {
+        // Clean up signature: replace bulky <p> tags with <div> for tighter spacing
+        let senderSignatureHtml = (sender.signature || "")
+          .replace(/<p>/gi, "<div>")
+          .replace(/<\/p>/gi, "</div>");
+
+        // Only auto-append designation if it's not already in the signature
+        if (sender.designation && !/{{designation}}|%designation%/i.test(senderSignatureHtml)) {
           const designationHtml = `<div style="color: #64748b; font-size: 13px; margin-top: 2px;">${sender.designation}</div>`;
-          senderSignatureHtml = senderSignatureHtml ? `${senderSignatureHtml}\n${designationHtml}` : designationHtml;
+          senderSignatureHtml = senderSignatureHtml ? `${senderSignatureHtml}<br>${designationHtml}` : designationHtml;
+        }
+
+        // Automatic fallback if signature/designation are missing
+        if (!senderSignatureHtml) {
+          senderSignatureHtml = `Best Regards,<br>{{sender_name}}`;
         }
 
         const variables = {
@@ -200,6 +287,7 @@ async function startWorker() {
           first_name: (recipient.name || "").split(" ")[0] || "",
           last_name: (recipient.name || "").split(" ").slice(1).join(" ") || "",
           sender_name: sender.displayName || sender.name || "",
+          designation: sender.designation || "",
           sender_designation: sender.designation || "",
           __signature__: senderSignatureHtml,
           ...recipient.metadata
@@ -208,7 +296,7 @@ async function startWorker() {
         // If the template does NOT contain a %signature% token, auto-append the signature at the end
         const htmlBody = stepConfig.htmlBody || "";
         const bodyWithSignature = senderSignatureHtml && !/%signature%/i.test(htmlBody)
-          ? htmlBody + `\n${senderSignatureHtml}`
+          ? htmlBody + `<br>${senderSignatureHtml}`
           : htmlBody;
 
         const emailId = crypto.randomUUID();
@@ -250,7 +338,7 @@ async function startWorker() {
 
           const nextStep = stepConfig.onConditionStepOrder || stepOrder + 1;
           const nextStepConfig = await CampaignStep.findOne({ where: { campaignId, stepOrder: nextStep }, transaction: t });
-          
+
           if (nextStepConfig) {
             await recipient.update({
               status: "pending", currentStep: nextStep, lastSentAt: DateTime.now().toJSDate(),
@@ -265,12 +353,12 @@ async function startWorker() {
           await t.commit();
           channel.sendToQueue(QUEUES.EMAIL_ROUTE, Buffer.from(JSON.stringify({ emailId: email.id })), { persistent: true });
         } catch (internalErr) {
-           await t.rollback();
-           throw internalErr;
+          await t.rollback();
+          throw internalErr;
         }
         channel.ack(msg);
       } catch (err) {
-        log("ERROR", "❌ Orchestrator failed", { campaignId, recipientId, error: err.message });
+        log("ERROR", "❌ Orchestrator failed", { error: err.message });
         const headers = msg.properties.headers || {};
         const retryCount = (headers["x-retry-count"] || 0) + 1;
         if (retryCount <= 3) {

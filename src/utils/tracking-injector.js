@@ -36,7 +36,7 @@ export function injectTracking(html, emailId, options = {}) {
   // 3. Inject Unsubscribe Link
   if (options.unsubscribeLink) {
     const unsubUrl = `${baseUrl}/api/v1/tracking/unsubscribe/${emailId}`;
-    const unsubHtml = `<div style="text-align: center; font-size: 11px; color: #777; margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee;">
+    const unsubHtml = `<div style="text-align: left; font-size: 11px; color: #777; margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee;">
       If you no longer wish to receive emails from us, you can <a href="${unsubUrl}" style="color: #777; text-decoration: underline;">unsubscribe here</a>.
     </div>`;
 

@@ -158,6 +158,10 @@ const Email = sequelize.define(
       type: DataTypes.TEXT,
       allowNull: true,
     },
+    lastError: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
   },
   {
     tableName: "emails",

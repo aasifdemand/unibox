@@ -26,6 +26,8 @@ export const refreshGoogleToken = async (sender) => {
         ? new Date(credentials.expiry_date)
         : new Date(Date.now() + 3600 * 1000),
       lastUsedAt: new Date(),
+      isVerified: true,
+      verificationError: null
     });
 
     return {
@@ -39,6 +41,13 @@ export const refreshGoogleToken = async (sender) => {
       message: error.message,
       response: error.response?.data,
     });
+
+    // Mark as unverified in DB for visibility
+    await sender.update({
+      isVerified: false,
+      verificationError: error.response?.data?.error_description || error.message || "Failed to refresh token"
+    }).catch(e => console.error("Failed to update sender health:", e));
+
     return null;
   }
 };

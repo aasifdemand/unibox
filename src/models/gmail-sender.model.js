@@ -213,6 +213,11 @@ const GmailSender = sequelize.define(
       type: DataTypes.DATE,
       allowNull: true,
     },
+    
+    isActive: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: true,
+    },
 
     /* =========================
        CONFIGURATION & REFRESH
@@ -254,6 +259,10 @@ const GmailSender = sequelize.define(
       type: DataTypes.STRING,
       allowNull: true,
     },
+    verificationError: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
   },
   {
     tableName: "gmail_senders",
@@ -264,6 +273,7 @@ const GmailSender = sequelize.define(
       { fields: ["userId"] },
       { fields: ["googleId"] },
       { fields: ["isVerified"] },
+      { fields: ["isActive"] },
       { fields: ["lastSyncCheckAt"] },
     ],
   },

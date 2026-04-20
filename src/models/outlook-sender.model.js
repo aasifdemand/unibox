@@ -207,6 +207,11 @@ const OutlookSender = sequelize.define(
       type: DataTypes.DATE,
       allowNull: true,
     },
+    
+    isActive: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: true,
+    },
 
     /* =========================
        CONFIGURATION & REFRESH
@@ -244,6 +249,10 @@ const OutlookSender = sequelize.define(
       type: DataTypes.STRING,
       allowNull: true,
     },
+    verificationError: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
   },
   {
     tableName: "outlook_senders",
@@ -254,6 +263,7 @@ const OutlookSender = sequelize.define(
       { fields: ["userId"] },
       { fields: ["microsoftId"] },
       { fields: ["isVerified"] },
+      { fields: ["isActive"] },
       { fields: ["lastSyncCheckAt"] },
     ],
   },

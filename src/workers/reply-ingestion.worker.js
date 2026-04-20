@@ -157,12 +157,19 @@ async function processReply({ sender, email, reply }) {
         message: `${reply.from} replied to your email in "${campaign.name}".`,
       });
 
-      // Emit a silent event for the Mailboxes UI to automatically refetch data
       emitToUser(campaign.userId, "mailbox_updated", {
         senderId: sender.id,
         senderEmail: sender.email,
         messageId: reply.messageId,
       });
+
+      // 🔄 Emit campaign update so the UI refreshes metrics/recipient list
+      emitToUser(campaign.userId, "campaign_updated", {
+        campaignId: email.campaignId,
+        recipientId: email.recipientId,
+        event: "replied"
+      });
+
     }
   } catch (err) {
     log("ERROR", "processReply failed", {
@@ -315,34 +322,105 @@ async function ingestOutlookReplies(sender) {
   }
 
   const convoMap = new Map();
+  const msgIdMap = new Map();
+  const subjectRecipientMap = new Map(); // Fallback for disconnected threads
+
   campaignEmails.forEach((e) => {
-    convoMap.set(e.providerThreadId, e);
+    if (e.providerThreadId) convoMap.set(e.providerThreadId, e);
+
+    const internetMessageId = e.metadata?.internetMessageId;
+    if (internetMessageId) {
+      const clean = internetMessageId.replace(/[<>]/g, "").trim();
+      msgIdMap.set(clean, e);
+    }
+
+    // Tier 3 Map: Subject (normalized) + Recipient
+    const normalizedSubject = (e.subject || "").toLowerCase().replace(/^re:\s*/i, "").trim();
+    if (normalizedSubject && e.recipientEmail) {
+      subjectRecipientMap.set(`${normalizedSubject}|${e.recipientEmail.toLowerCase()}`, e);
+    }
   });
+
 
   const token = await getValidMicrosoftToken(sender);
   if (!token) return;
 
-  const res = await axios.get(
-    "https://graph.microsoft.com/v1.0/me/messages?$top=50",
-    {
-      headers: { Authorization: `Bearer ${token}` },
-    },
-  );
+  const folders = ["inbox", "junkemail"];
+  const messages = [];
 
-  for (const msg of res.data.value || []) {
+
+  for (const folder of folders) {
+    try {
+      const folderRes = await axios.get(
+        `https://graph.microsoft.com/v1.0/me/mailFolders/${folder}/messages?$top=100&$select=id,conversationId,subject,from,receivedDateTime,internetMessageId,parentFolderId,body,bodyPreview&$orderby=receivedDateTime desc`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (folderRes.data.value) {
+        log("DEBUG", `Found ${folderRes.data.value.length} messages in Outlook folder: ${folder}`);
+        messages.push(...folderRes.data.value);
+      } else {
+        log("DEBUG", `No messages found in Outlook folder: ${folder}`);
+      }
+    } catch (folderErr) {
+      log("ERROR", `Failed to fetch Outlook folder: ${folder}`, {
+        error: folderErr.message,
+        status: folderErr.response?.status,
+        data: folderErr.response?.data
+      });
+    }
+  }
+
+  if (messages.length === 0) {
+    log("INFO", "No messages found in scanned folders for Outlook sender", { sender: sender.email });
+    return;
+  }
+
+  for (const msg of messages) {
     const conversationId = msg.conversationId;
     const from = msg.from?.emailAddress?.address?.toLowerCase();
 
-    if (!from || from === sender.email.toLowerCase()) continue;
+    if (!from) continue;
 
-    const matchedEmail = convoMap.get(conversationId);
+    // Ignore internal system messages or self-sends
+    if (from === sender.email.toLowerCase()) continue;
+
+    // TIER 1: Conversation ID Match
+    let matchedEmail = convoMap.get(conversationId);
+
+    // TIER 3: Fallback - Subject + Recipient Match
+    if (!matchedEmail) {
+      // Improved normalization: remove any number of "Re:", "Fwd:", etc.
+      const normalizedSubject = (msg.subject || "")
+        .toLowerCase()
+        .replace(/^(re|fwd|aw|antw|res):\s*/i, "")
+        .replace(/^(re|fwd|aw|antw|res):\s*/i, "") // Double pass for nested replies
+        .trim();
+
+      const lookupKey = `${normalizedSubject}|${from}`;
+      matchedEmail = subjectRecipientMap.get(lookupKey);
+
+      if (matchedEmail) {
+        log("INFO", "⚓ Tier 3 Match (Subject/Recipient) succeeded for Outlook", {
+          conversationId,
+          subject: msg.subject,
+          normalizedSubject,
+          from
+        });
+      }
+    }
 
     if (!matchedEmail) {
-      log("DEBUG", "No conversation match found", {
-        conversationId,
+      // Keep as debug so we can see what's being ignored during troubleshooting
+      log("DEBUG", "Ignoring unrelated email", {
+        from,
+        subject: msg.subject,
+        convoId: conversationId
       });
       continue;
     }
+
+
+
 
     log("INFO", "Matched Outlook reply", {
       emailId: matchedEmail.id,
@@ -604,7 +682,7 @@ async function checkAllSenders() {
   running = true;
 
   try {
-    const twentyMinsAgo = DateTime.now().minus({ minutes: 20 }).toJSDate();
+    const tenMinsAgo = DateTime.now().minus({ minutes: 10 }).toJSDate();
     const activeCampaignFilter = {
       model: Campaign,
       required: true,
@@ -616,13 +694,15 @@ async function checkAllSenders() {
       where: {
         isVerified: true,
         [Op.or]: [
-          { lastReplyCheckAt: { [Op.lt]: twentyMinsAgo } },
+          { lastReplyCheckAt: { [Op.lt]: tenMinsAgo } },
           { lastReplyCheckAt: null }
         ]
       },
       include: [activeCampaignFilter],
       limit: 50 // Lease 50 per tick
     };
+
+
 
     const providers = [
       { model: GmailSender, type: 'gmail', fn: ingestGmailReplies },

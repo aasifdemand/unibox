@@ -127,8 +127,9 @@ const limit = pLimit(20); // Process 20 campaigns in parallel
           recipientId: r.id
         })), { persistent: true });
 
-        const intervalMins = campaign.sendingInterval || 20;
-        await r.update({ nextRunAt: DateTime.now().toUTC().plus({ minutes: intervalMins }).toJSDate() });
+        // 5b. Short safety lease (2 mins) while orchestrator processes. 
+        // The orchestrator will set the final nextRunAt once successful.
+        await r.update({ nextRunAt: DateTime.now().toUTC().plus({ minutes: 2 }).toJSDate() });
       }
     } catch (campaignErr) {
       log("ERROR", "❌ Error processing campaign", {

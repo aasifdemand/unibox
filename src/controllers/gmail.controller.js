@@ -1024,7 +1024,7 @@ export const syncGmailMailbox = asyncHandler(async (req, res) => {
   const userId = req.user.id;
 
   const sender = await GmailSender.findOne({
-    where: { id: mailboxId, userId, isVerified: true },
+    where: { id: mailboxId, userId },
   });
   if (!sender) throw new AppError("Gmail mailbox not found", 404);
 
@@ -2206,6 +2206,26 @@ export const batchGmailOperations = asyncHandler(async (req, res) => {
       }
 
       await sender.update({ lastUsedAt: new Date() });
+
+      // Instant DB Sync: Remove deleted messages from local database
+      if (operation === "delete" || operation === "move-to-trash") {
+        try {
+          const deletedIds = results
+            .filter(r => r.status === "deleted" || r.status === "moved-to-trash")
+            .map(r => r.messageId);
+            
+          if (deletedIds.length > 0) {
+            await MailboxMessage.destroy({
+              where: {
+                senderId: mailboxId,
+                providerMessageId: { [Op.in]: deletedIds }
+              }
+            });
+          }
+        } catch (dbError) {
+          console.error("Gmail batch delete DB sync error:", dbError);
+        }
+      }
 
       // Invalidate caches
       await Promise.all([

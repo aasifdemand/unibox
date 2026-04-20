@@ -830,8 +830,7 @@ export const syncOutlookMailbox = asyncHandler(async (req, res) => {
   const userId = req.user.id;
 
   const sender = await OutlookSender.findOne({
-    where: { id: mailboxId, userId, isVerified: true },
-    attributes: ["id", "email", "refreshToken", "accessToken"],
+    where: { id: mailboxId, userId },
   });
 
   if (!sender) throw new AppError("Outlook mailbox not found", 404);
@@ -1756,6 +1755,26 @@ export const batchOutlookOperations = asyncHandler(async (req, res) => {
     });
 
     await sender.update({ lastUsedAt: new Date() });
+
+    // Instant DB Sync: Remove deleted messages from local database
+    if (operation === "delete") {
+      try {
+        const deletedIds = results
+          .filter(r => r.status === "success")
+          .map(r => r.messageId);
+          
+        if (deletedIds.length > 0) {
+          await MailboxMessage.destroy({
+            where: {
+              senderId: mailboxId,
+              providerMessageId: { [Op.in]: deletedIds }
+            }
+          });
+        }
+      } catch (dbError) {
+        console.error("Outlook batch delete DB sync error:", dbError);
+      }
+    }
 
     // Invalidate caches
     await Promise.all([

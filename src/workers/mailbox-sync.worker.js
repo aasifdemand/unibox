@@ -21,10 +21,19 @@ const log = (level, message, meta = {}) =>
     })
   );
 
+const processingSet = new Set();
+
 async function processMailboxSync(msg, channel) {
   const content = msg.content.toString();
   const { senderId, senderType } = JSON.parse(content);
 
+  if (processingSet.has(senderId)) {
+    log("INFO", "Sync already in progress, skipping redundant task", { senderId, senderType });
+    channel.ack(msg);
+    return;
+  }
+
+  processingSet.add(senderId);
   log("INFO", "Consuming sync task", { senderId, senderType });
 
   try {
@@ -33,6 +42,8 @@ async function processMailboxSync(msg, channel) {
   } catch (err) {
     log("ERROR", "Mailbox sync failed", { senderId, senderType, error: err.message });
     channel.nack(msg, false, false);
+  } finally {
+    processingSet.delete(senderId);
   }
 }
 

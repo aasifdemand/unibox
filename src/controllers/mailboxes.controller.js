@@ -179,7 +179,10 @@ export const getGmailMessages = asyncHandler(async (req, res) => {
       limit: max,
     });
 
-    if (localMessages.length > 0) {
+    // Only return cache if we have enough messages to fulfill the request OR we've reached the end of the folder
+    const hasEnough = localMessages.length >= max || localMessages.length >= (localFolder.totalCount || 0);
+
+    if (localMessages.length > 0 && hasEnough) {
       return res.json({
         success: true,
         fromCache: true,
@@ -195,7 +198,7 @@ export const getGmailMessages = asyncHandler(async (req, res) => {
               ]
             }
           })),
-          nextPageToken: null, // Local pagination to be improved
+          nextPageToken: null, 
         }
       });
     }
@@ -437,6 +440,7 @@ export const getMailboxes = asyncHandler(async (req, res) => {
         domain: s.domain,
         isVerified: s.isVerified,
         isActive: true,
+        verificationError: s.verificationError,
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
         lastSyncAt: s.lastInboxSyncAt || s.lastUsedAt,
@@ -447,6 +451,7 @@ export const getMailboxes = asyncHandler(async (req, res) => {
           warmupScore: Math.round((health.limit / DeliveryGuard.LIMITS.GMAIL.max) * 100),
           reputationScore: s.SenderHealth ? s.SenderHealth.reputationScore : 100,
           healthStatus: s.SenderHealth ? s.SenderHealth.healthStatus : "healthy",
+          blacklisted: s.SenderHealth ? s.SenderHealth.blacklisted : false,
           warmupEnabled: s.warmupEnabled,
           warmupStatus: s.warmupStatus,
           warmupReplyRate: s.warmupReplyRate,
@@ -474,6 +479,7 @@ export const getMailboxes = asyncHandler(async (req, res) => {
         domain: s.domain,
         isVerified: s.isVerified,
         isActive: true,
+        verificationError: s.verificationError,
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
         lastSyncAt: s.lastInboxSyncAt || s.lastUsedAt,
@@ -484,6 +490,7 @@ export const getMailboxes = asyncHandler(async (req, res) => {
           warmupScore: Math.round((health.limit / DeliveryGuard.LIMITS.OUTLOOK.max) * 100),
           reputationScore: s.SenderHealth ? s.SenderHealth.reputationScore : 100,
           healthStatus: s.SenderHealth ? s.SenderHealth.healthStatus : "healthy",
+          blacklisted: s.SenderHealth ? s.SenderHealth.blacklisted : false,
           warmupEnabled: s.warmupEnabled,
           warmupStatus: s.warmupStatus,
           warmupReplyRate: s.warmupReplyRate,
@@ -511,6 +518,7 @@ export const getMailboxes = asyncHandler(async (req, res) => {
         domain: s.domain,
         isVerified: s.isVerified,
         isActive: s.isActive,
+        verificationError: s.verificationError,
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
         lastSyncAt: s.lastInboxSyncAt || s.lastUsedAt,
@@ -521,6 +529,7 @@ export const getMailboxes = asyncHandler(async (req, res) => {
           warmupScore: Math.round((health.limit / DeliveryGuard.LIMITS.SMTP.max) * 100),
           reputationScore: s.SenderHealth ? s.SenderHealth.reputationScore : 100,
           healthStatus: s.SenderHealth ? s.SenderHealth.healthStatus : "healthy",
+          blacklisted: s.SenderHealth ? s.SenderHealth.blacklisted : false,
           warmupEnabled: s.warmupEnabled,
           warmupStatus: s.warmupStatus,
           warmupReplyRate: s.warmupReplyRate,
@@ -633,7 +642,10 @@ export const getOutlookMessages = asyncHandler(async (req, res) => {
       limit: pageSize,
     });
 
-    if (localMessages.length > 0) {
+    // Only use cache if we have enough messages for the first page or we have all folder messages
+    const hasEnough = localMessages.length >= pageSize || localMessages.length >= (localFolder.totalCount || 0);
+
+    if (localMessages.length > 0 && hasEnough) {
       return res.json({
         success: true,
         fromCache: true,
@@ -648,7 +660,7 @@ export const getOutlookMessages = asyncHandler(async (req, res) => {
             conversationId: m.providerThreadId,
           })),
           nextSkipToken: null,
-          count: localMessages.length,
+          count: localFolder.totalCount || localMessages.length,
         }
       });
     }
@@ -1060,89 +1072,9 @@ export const getOutlookDrafts = asyncHandler(async (req, res) => {
   return getOutlookMessages(req, res);
 });
 
-// =========================
-// SYNC GMAIL MAILBOX (WITH SPECIFIC FOLDER)
-// =========================
-export const syncGmailMailbox = asyncHandler(async (req, res) => {
-  const { mailboxId } = req.params;
-  const { folderId = "INBOX" } = req.query;
-  const userId = req.user.id;
+// (Removed duplicate syncGmailMailbox)
 
-  const sender = await GmailSender.findOne({
-    where: { id: mailboxId, userId, isVerified: true },
-  });
-  if (!sender) throw new AppError("Gmail mailbox not found", 404);
-
-  const gmail = await getGmailClient(sender);
-
-  // Test connection by fetching one message from the specified folder
-  await gmail.users.messages.list({
-    userId: "me",
-    maxResults: 1,
-    labelIds: [folderId],
-  });
-
-  // Update last sync timestamp for the specific folder
-  const updateData = { lastInboxSyncAt: new Date() };
-  if (folderId === "SENT") updateData.lastSentSyncAt = new Date();
-  if (folderId === "DRAFT") updateData.lastDraftsSyncAt = new Date();
-
-  await sender.update(updateData);
-
-  res.json({
-    success: true,
-    message: `Mailbox synced successfully (${folderId})`,
-    data: { syncedAt: new Date(), folderId },
-  });
-});
-
-// =========================
-// SYNC OUTLOOK MAILBOX (WITH SPECIFIC FOLDER)
-// =========================
-export const syncOutlookMailbox = asyncHandler(async (req, res) => {
-  const { mailboxId } = req.params;
-  const { folderId = "inbox" } = req.query;
-  const userId = req.user.id;
-
-  const sender = await OutlookSender.findOne({
-    where: { id: mailboxId, userId, isVerified: true },
-  });
-  if (!sender) throw new AppError("Outlook mailbox not found", 404);
-
-  const token = await getOutlookToken(sender);
-
-  // Build endpoint for the specific folder
-  let endpoint;
-  if (folderId === "inbox") {
-    endpoint = "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages";
-  } else if (folderId === "sentitems") {
-    endpoint =
-      "https://graph.microsoft.com/v1.0/me/mailFolders/sentitems/messages";
-  } else if (folderId === "drafts") {
-    endpoint =
-      "https://graph.microsoft.com/v1.0/me/mailFolders/drafts/messages";
-  } else {
-    endpoint = `https://graph.microsoft.com/v1.0/me/mailFolders/${folderId}/messages`;
-  }
-
-  await axios.get(endpoint, {
-    headers: { Authorization: `Bearer ${token}` },
-    params: { $top: 1 },
-  });
-
-  // Update last sync timestamp
-  const updateData = { lastInboxSyncAt: new Date() };
-  if (folderId === "sentitems") updateData.lastSentSyncAt = new Date();
-  if (folderId === "drafts") updateData.lastDraftsSyncAt = new Date();
-
-  await sender.update(updateData);
-
-  res.json({
-    success: true,
-    message: `Mailbox synced successfully (${folderId})`,
-    data: { syncedAt: new Date(), folderId },
-  });
-});
+// (Removed duplicate syncOutlookMailbox)
 
 // =========================
 // MARK OUTLOOK MESSAGE AS READ

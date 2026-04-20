@@ -21,8 +21,8 @@ export function renderTemplate(template, variables = {}) {
   const signatureHtml = allVars.__signature__ || "";
   template = template.replace(/%signature%/gi, signatureHtml);
 
-  // 1. Handle Spintax: {Option A|Option B|Option C}
-  const spintaxRegex = /{([^{}]+?)}/g;
+  // 1. Handle Spintax: {Option A|Option B|Option C} (Must contain |)
+  const spintaxRegex = /{([^{}|]+?\|[^{}]+?)}/g;
   while (template.match(spintaxRegex)) {
     template = template.replace(spintaxRegex, (match, optionsStr) => {
       const choices = optionsStr.split('|');
