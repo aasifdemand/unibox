@@ -302,28 +302,37 @@ async function monitorImap(mailbox, recentWarmups) {
 }
 
 async function handleMaybeReply(mailbox, type, messageId, warmupLog) {
+  // If we've already decided (replied or skipped), don't process again
+  if (warmupLog.status === 'replied' || warmupLog.status === 'received') return;
+
   const replyChance = mailbox.warmupReplyRate || 0.3;
-  if (Math.random() > replyChance) return;
-  if (warmupLog.status === 'replied') return;
+  const shouldReply = Math.random() <= replyChance;
 
-  const replyBody = await activeWarmupService.generateWarmupReply(warmupLog.subject, warmupLog.body);
+  if (shouldReply) {
+    const replyBody = await activeWarmupService.generateWarmupReply(warmupLog.subject, warmupLog.body);
 
-  const channel = await getChannel();
-  channel.sendToQueue(QUEUES.EMAIL_SEND, Buffer.from(JSON.stringify({
-    senderId: mailbox.id,
-    senderType: type,
-    recipientEmail: warmupLog.senderEmail,
-    subject: `Re: ${warmupLog.subject}`,
-    htmlBody: replyBody,
-    isWarmup: true,
-    metadata: {
-      warmup: true,
-      originalMessageId: messageId,
-      isReply: true
-    }
-  })), { persistent: true });
+    const channel = await getChannel();
+    channel.sendToQueue(QUEUES.EMAIL_SEND, Buffer.from(JSON.stringify({
+      senderId: mailbox.id,
+      senderType: type,
+      recipientEmail: warmupLog.senderEmail,
+      subject: `Re: ${warmupLog.subject}`,
+      htmlBody: replyBody,
+      isWarmup: true,
+      metadata: {
+        warmup: true,
+        originalMessageId: messageId,
+        isReply: true
+      }
+    })), { persistent: true });
 
-  await warmupLog.update({ status: 'replied', lastActionAt: DateTime.now().toJSDate() });
+    await warmupLog.update({ status: 'replied', lastActionAt: DateTime.now().toJSDate() });
+    console.log(`[Warmup] Decided to REPLY to ${warmupLog.subject} (Chance: ${replyChance})`);
+  } else {
+    // Mark as 'received' so we don't roll the dice again in the next monitor tick
+    await warmupLog.update({ status: 'received', lastActionAt: DateTime.now().toJSDate() });
+    console.log(`[Warmup] Decided NOT to reply to ${warmupLog.subject} (Chance: ${replyChance})`);
+  }
 }
 
 startConsumer();
