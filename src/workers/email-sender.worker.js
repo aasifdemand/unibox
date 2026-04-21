@@ -633,6 +633,10 @@ async function startWorker() {
 
             await Promise.all(statsUpdates);
           }
+        } else {
+          // 📈 UPDATE WARMUP STATS (Only on actual success!)
+          await sender.increment("warmupCurrentSent");
+          log("DEBUG", "Incremented warmupCurrentSent count", { senderId: sender.id });
         }
 
         log("INFO", "✅ Email sent successfully", {

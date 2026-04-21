@@ -1,10 +1,13 @@
 import { DateTime } from "luxon";
-import { SmtpSender, GmailSender, OutlookSender, User } from "../models/index.js";
+import { SmtpSender, GmailSender, OutlookSender } from "../models/index.js";
 import { getRabbitChannel as getChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
-import { Op } from "sequelize";
 
-export const log = (level, message, meta = {}) =>
+
+const TICK_INTERVAL_MS = 10 * 60 * 1000;
+const BATCH_SIZE = 500;
+
+export const log = (level, message, meta = {}) => {
   console.log(
     JSON.stringify({
       ts: DateTime.now().toISO(),
@@ -12,97 +15,106 @@ export const log = (level, message, meta = {}) =>
       level,
       message,
       ...meta,
-    }),
+    })
   );
+};
 
-/**
- * The Warmup Producer identifies mailboxes eligible for sending
- * and pushes tasks to the WARMUP_SEND queue.
- */
 export async function runWarmupProducerTick(options = {}) {
   try {
     log("INFO", "⏰ Warmup producer tick started", { forceAll: !!options.forceAll });
-
-    const tenMinsAgo = DateTime.now().minus({ minutes: 10 }).toJSDate();
     const channel = await getChannel();
 
-    // 1. Fetch enabled senders that haven't been checked recently
-    const queryOptions = {
-      where: { 
-        warmupEnabled: true, 
-        warmupStatus: "active", 
-        isVerified: true,
-        [Op.or]: [
-            { lastWarmupCheckAt: { [Op.lt]: tenMinsAgo } },
-            { lastWarmupCheckAt: null }
-        ]
-      },
-      include: [{ model: User, attributes: ["timezone"] }],
-      limit: 100
-    };
-
-    const [smtps, gmails, outlooks] = await Promise.all([
-      SmtpSender.findAll(queryOptions),
-      GmailSender.findAll(queryOptions),
-      OutlookSender.findAll(queryOptions),
-    ]);
-
-    const allSenders = [
-      ...smtps.map(s => ({ ...s.get(), type: 'smtp', model: s, user: s.User })),
-      ...gmails.map(s => ({ ...s.get(), type: 'gmail', model: s, user: s.User })),
-      ...outlooks.map(s => ({ ...s.get(), type: 'outlook', model: s, user: s.User })),
+    const models = [
+      { name: "outlook", model: OutlookSender },
+      { name: "gmail", model: GmailSender },
+      { name: "smtp", model: SmtpSender },
     ];
 
-    if (allSenders.length === 0) {
-      log("INFO", "📭 No eligible senders due for warmup send check");
-      return;
-    }
-
-    for (const sender of allSenders) {
-      const timezone = sender.user?.timezone || "UTC";
-      const today = DateTime.now().setZone(timezone).toFormat("yyyy-MM-dd");
-
-      // A. DAWN TRANSITION: Reset counts at midnight
-      if (sender.warmupLastResetDate !== today) {
-        log("INFO", `🌅 Dawn transition for ${sender.email} (${timezone})`);
-        
-        const nextDaysActive = (sender.warmupDaysActive || 0) + 1;
-        const nextLimit = Math.min(
-          sender.warmupMaxLimit || 50,
-          (sender.warmupInitialLimit || 2) + (nextDaysActive * (sender.warmupIncrementBy || 2)),
-        );
-
-        await sender.model.update({
-          warmupCurrentSent: 0,
-          warmupDaysActive: nextDaysActive,
-          warmupDailyLimit: nextLimit,
-          warmupLastResetDate: today,
-          lastWarmupCheckAt: DateTime.now().toJSDate()
+    for (const { name: senderType, model } of models) {
+      let offset = 0;
+      while (true) {
+        const mailboxes = await model.findAll({
+          where: {
+            warmupEnabled: true,
+            warmupStatus: "active",
+            isVerified: true,
+            ...(senderType === "smtp" ? { isActive: true } : {}),
+          },
+          limit: BATCH_SIZE,
+          offset: offset,
+          order: [["id", "ASC"]],
         });
-        
-        sender.warmupCurrentSent = 0;
-        sender.warmupDailyLimit = nextLimit;
-      }
 
-      // B. ENQUEUE: If limit not reached and probability hits
-      if (sender.warmupCurrentSent >= sender.warmupDailyLimit) {
-        // Still update the timestamp so we don't keep picking up "Finished" senders in every tick
-        await sender.model.update({ lastWarmupCheckAt: DateTime.now().toJSDate() }, { where: { id: sender.id } });
-        continue;
-      }
+        if (mailboxes.length === 0) break;
 
-      // Human Randomness: 20% chance per check
-      // EXCEPT: Always send the first email of the day (CurrentSent = 0) to ensure quick start
-      const isFirstSendOfDay = sender.warmupCurrentSent === 0;
-      if (options.forceAll || isFirstSendOfDay || Math.random() < 0.2) {
-        channel.sendToQueue(QUEUES.WARMUP_SEND, Buffer.from(JSON.stringify({
-          senderId: sender.id,
-          senderType: sender.type,
-          email: sender.email
-        })), { persistent: true });
-        
-        await sender.model.update({ lastWarmupCheckAt: DateTime.now().toJSDate() }, { where: { id: sender.id } });
-        log("INFO", "📤 Enqueued Warmup Send Task", { email: sender.email });
+        for (const sender of mailboxes) {
+          // A. RESET: If it's a new day, reset the current sent count
+          const today = DateTime.now().toFormat("yyyy-MM-dd");
+          const lastReset = sender.warmupLastResetDate;
+
+          if (lastReset !== today) {
+            const nextLimit = Math.min(
+              (sender.warmupDailyLimit || 1) + (sender.warmupIncrement || 1),
+              sender.warmupMaxLimit || 50
+            );
+
+            await model.update(
+              {
+                warmupCurrentSent: 0,
+                warmupLastResetDate: today,
+                warmupDailyLimit: nextLimit,
+                lastWarmupCheckAt: DateTime.now().toJSDate(),
+              },
+              { where: { id: sender.id } }
+            );
+
+            sender.warmupCurrentSent = 0;
+            sender.warmupDailyLimit = nextLimit;
+          }
+
+          // B. ENQUEUE: If limit not reached and probability hits
+          if (sender.warmupCurrentSent >= (sender.warmupDailyLimit || 5)) {
+            await model.update(
+              { lastWarmupCheckAt: DateTime.now().toJSDate() },
+              { where: { id: sender.id } }
+            );
+            continue;
+          }
+
+          const isFirstSendOfDay = sender.warmupCurrentSent === 0;
+          if (options.forceAll || isFirstSendOfDay || Math.random() < 0.5) {
+            // Assign a random delay within the TICK_INTERVAL_MS window (minus some buffer)
+            const delayMs = Math.floor(Math.random() * (TICK_INTERVAL_MS - 30000));
+
+            channel.sendToQueue(
+              QUEUES.WARMUP_SEND,
+              Buffer.from(
+                JSON.stringify({
+                  senderId: sender.id,
+                  senderType,
+                  email: sender.email,
+                  delayMs, // Processor will use this to stagger
+                })
+              ),
+              { persistent: true }
+            );
+
+            await model.update(
+              { lastWarmupCheckAt: DateTime.now().toJSDate() },
+              { where: { id: sender.id } }
+            );
+            log("INFO", "📤 Enqueued Staggered Warmup Task", {
+              email: sender.email,
+              delaySec: Math.round(delayMs / 1000),
+            });
+          }
+        }
+
+        offset += BATCH_SIZE;
+        // Small yield to event loop if needed between heavy batches
+        if (offset % (BATCH_SIZE * 2) === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
       }
     }
 
@@ -112,14 +124,29 @@ export async function runWarmupProducerTick(options = {}) {
   }
 }
 
-const TICK_INTERVAL_MS = 10 * 60 * 1000;
+
 
 import { fileURLToPath } from "url";
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === (process.argv[1].startsWith('file:') ? fileURLToPath(process.argv[1]) : process.argv[1]);
 
+async function boot() {
+  try {
+    log("INFO", "🚀 Warmup Producer Worker started");
+    await runWarmupProducerTick();
+    setInterval(async () => {
+      try {
+        await runWarmupProducerTick();
+      } catch (err) {
+        log("ERROR", "Interval tick failed", { error: err.message });
+      }
+    }, TICK_INTERVAL_MS);
+  } catch (err) {
+    log("ERROR", "Worker boot failed, retrying in 10s", { error: err.message });
+    setTimeout(boot, 10000);
+  }
+}
+
 if (isMain) {
-  log("INFO", "🚀 Warmup Producer Worker started");
-  runWarmupProducerTick();
-  setInterval(runWarmupProducerTick, TICK_INTERVAL_MS);
+  boot();
 }
 

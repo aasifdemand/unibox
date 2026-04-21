@@ -33,43 +33,54 @@ const log = (level, message, meta = {}) =>
   );
 
 async function startConsumer() {
-  const channel = await getChannel();
+  let channel;
+  try {
+    channel = await getChannel();
 
-  // 1. WARMUP_RESCUE Consumer
-  await channel.assertQueue(QUEUES.WARMUP_RESCUE, { durable: true });
-  channel.prefetch(10); // Process up to 10 in parallel per worker process
+    // 1. WARMUP_RESCUE Consumer
+    await channel.assertQueue(QUEUES.WARMUP_RESCUE, { durable: true });
+    channel.prefetch(10); 
 
-  channel.consume(QUEUES.WARMUP_RESCUE, async (msg) => {
-    if (!msg) return;
-    const data = JSON.parse(msg.content.toString());
-    try {
-      log("INFO", `Processing Rescue Task for ${data.email}`, { type: data.senderType });
-      await processRescueTask(data);
-      channel.ack(msg);
-    } catch (err) {
-      log("ERROR", `Rescue Task Failed for ${data.email}`, { error: err.message });
-      // Don't requue indefinitely to avoid poison messages
-      channel.nack(msg, false, false);
-    }
-  });
+    channel.consume(QUEUES.WARMUP_RESCUE, async (msg) => {
+      if (!msg) return;
+      const data = JSON.parse(msg.content.toString());
+      try {
+        log("INFO", `Processing Rescue Task for ${data.email}`, { type: data.senderType });
+        await processRescueTask(data);
+        channel.ack(msg);
+      } catch (err) {
+        log("ERROR", `Rescue Task Failed for ${data.email}`, { error: err.message });
+        channel.nack(msg, false, false);
+      }
+    });
 
-  // 2. WARMUP_SEND Consumer
-  await channel.assertQueue(QUEUES.WARMUP_SEND, { durable: true });
+    // 2. WARMUP_SEND Consumer
+    await channel.assertQueue(QUEUES.WARMUP_SEND, { durable: true });
 
-  channel.consume(QUEUES.WARMUP_SEND, async (msg) => {
-    if (!msg) return;
-    const data = JSON.parse(msg.content.toString());
-    try {
-      log("INFO", `Processing Send Task for ${data.email}`, { type: data.senderType });
-      await processSendTask(data);
-      channel.ack(msg);
-    } catch (err) {
-      log("ERROR", `Send Task Failed for ${data.email}`, { error: err.message });
-      channel.nack(msg, false, false);
-    }
-  });
+    channel.consume(QUEUES.WARMUP_SEND, async (msg) => {
+      if (!msg) return;
+      const data = JSON.parse(msg.content.toString());
+      try {
+        log("INFO", `Processing Send Task for ${data.email}`, { type: data.senderType });
+        await processSendTask(data);
+        channel.ack(msg);
+      } catch (err) {
+        log("ERROR", `Send Task Failed for ${data.email}`, { error: err.message });
+        channel.nack(msg, false, false);
+      }
+    });
 
-  log("INFO", "🚀 Warmup Processor Consumer started and listening");
+    log("INFO", "🚀 Warmup Processor Consumer started and listening");
+
+    channel.on("close", () => {
+      log("WARN", "Channel closed, restarting in 5s...");
+      setTimeout(startConsumer, 5000);
+    });
+
+  } catch (err) {
+    log("ERROR", "Worker failed to start", { error: err.message });
+    setTimeout(startConsumer, 5000);
+  }
 }
 
 /* =========================
@@ -77,21 +88,27 @@ async function startConsumer() {
 ========================= */
 
 async function processSendTask(data) {
-  const { senderId, senderType } = data;
-  let model;
-  if (senderType === 'gmail') model = GmailSender;
-  else if (senderType === 'outlook') model = OutlookSender;
-  else model = SmtpSender;
+  const senderId = data.senderId;
+  const senderType = data.senderType;
 
-  const sender = await model.findByPk(senderId);
+  // Staggering: Wait for the assigned delay before actually sending
+  if (data.delayMs && data.delayMs > 0) {
+    log("INFO", `Staggering send for ${data.email} - waiting ${Math.round(data.delayMs / 1000)}s`);
+    await new Promise((resolve) => setTimeout(resolve, data.delayMs));
+  }
+
+  let sender;
+  if (senderType === "smtp") sender = await SmtpSender.findByPk(senderId);
+  else if (senderType === "gmail") sender = await GmailSender.findByPk(senderId);
+  else if (senderType === "outlook") sender = await OutlookSender.findByPk(senderId);
   if (!sender || !sender.warmupEnabled || sender.warmupStatus !== 'active') return;
 
-  // Trigger the actual send via service
-  await activeWarmupService.triggerWarmupSend(sender);
+  // Trigger the actual send via service (Pass explicit type)
+  await activeWarmupService.triggerWarmupSend(sender, senderType);
 
-  // Increment current sent count
-  await sender.increment("warmupCurrentSent");
-  log("INFO", `Successfully sent warmup email for ${sender.email}`);
+  // Note: We no longer increment warmupCurrentSent here. 
+  // It is now handled by the email-sender worker upon successful delivery.
+  log("INFO", `Warmup email tasks enqueued for ${sender.email}`);
 }
 
 async function processRescueTask(data) {

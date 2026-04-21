@@ -12,6 +12,7 @@ import { senderHealthService } from "../services/sender-health.service.js";
 import { queueMailboxSync } from "../queues/mailbox.queue.js";
 import sequelize from "../config/db.js";
 import { getProxyForEmail } from "../utils/proxy-resolver.js";
+import { DateTime } from "luxon";
 
 
 
@@ -645,6 +646,26 @@ export const updateWarmupSettings = asyncHandler(async (req, res) => {
   if (initialLimit !== undefined) updateData.warmupInitialLimit = initialLimit;
   if (incrementBy !== undefined) updateData.warmupIncrementBy = incrementBy;
   if (maxLimit !== undefined) updateData.warmupMaxLimit = maxLimit;
+
+  // Real-time synchronization:
+  // If we are starting warmup (DaysActive = 0) OR explicit settings are being adjusted,
+  // ensure the dailyLimit (Current Target) reflects the configuration.
+  const currentDaysActive = sender.warmupDaysActive || 0;
+  
+  // If user provided a new initialLimit, and they are on Day 0/1, force sync the target
+  if (initialLimit !== undefined && currentDaysActive <= 1) {
+    updateData.warmupDailyLimit = initialLimit;
+  }
+
+  // If enabling for the first time
+  if (enabled === true && currentDaysActive === 0) {
+    updateData.warmupDailyLimit = initialLimit || sender.warmupInitialLimit || 2;
+    
+    // 🔥 CRITICAL: Set last reset date to today so the worker doesn't 
+    // immediately trigger a "Dawn Transition" and skip Day 1
+    const userTimezone = sender.User?.timezone || "UTC";
+    updateData.warmupLastResetDate = DateTime.now().setZone(userTimezone).toFormat("yyyy-MM-dd");
+  }
 
   await sender.update(updateData);
 

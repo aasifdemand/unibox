@@ -275,6 +275,8 @@ const GmailSender = sequelize.define(
       { fields: ["isVerified"] },
       { fields: ["isActive"] },
       { fields: ["lastSyncCheckAt"] },
+      { fields: ["warmupEnabled", "warmupStatus", "isVerified"] },
+      { fields: ["lastWarmupCheckAt"] },
     ],
   },
 );

@@ -320,6 +320,8 @@ const SmtpSender = sequelize.define(
       { fields: ["isActive"] },
       { fields: ["provider"] },
       { fields: ["lastSyncCheckAt"] },
+      { fields: ["warmupEnabled", "warmupStatus", "isVerified", "isActive"] },
+      { fields: ["lastWarmupCheckAt"] },
     ],
   },
 );

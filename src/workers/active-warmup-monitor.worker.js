@@ -32,63 +32,86 @@ async function runMonitorProducerTick() {
 
     const channel = await getChannel();
     const fifteenMinsAgo = DateTime.now().minus({ minutes: 15 }).toJSDate();
+    const BATCH_SIZE = 500;
 
-    const queryOptions = {
-        where: {
+    const models = [
+      { name: "outlook", model: OutlookSender },
+      { name: "gmail", model: GmailSender },
+      { name: "smtp", model: SmtpSender },
+    ];
+
+    for (const { name: type, model } of models) {
+      let offset = 0;
+      while (true) {
+        const mailboxes = await model.findAll({
+          where: {
             warmupEnabled: true,
             warmupStatus: "active",
             isVerified: true,
+            ...(type === "smtp" ? { isActive: true } : {}),
             [Op.or]: [
-                { lastWarmupRescueAt: { [Op.lt]: fifteenMinsAgo } },
-                { lastWarmupRescueAt: null }
-            ]
-        },
-        limit: 100, // Process in batches of 100 per producer tick
-        attributes: ['id', 'email']
-    };
+              { lastWarmupRescueAt: { [Op.lt]: fifteenMinsAgo } },
+              { lastWarmupRescueAt: null },
+            ],
+          },
+          limit: BATCH_SIZE,
+          offset: offset,
+          order: [["id", "ASC"]],
+          attributes: ["id", "email"],
+        });
 
-    const [gmails, outlooks, smtps] = await Promise.all([
-      GmailSender.findAll(queryOptions),
-      OutlookSender.findAll(queryOptions),
-      SmtpSender.findAll({ ...queryOptions, where: { ...queryOptions.where, isActive: true } }),
-    ]);
+        if (mailboxes.length === 0) break;
 
-    const allToEnqueue = [
-      ...gmails.map(s => ({ id: s.id, type: 'gmail', email: s.email, model: GmailSender })),
-      ...outlooks.map(s => ({ id: s.id, type: 'outlook', email: s.email, model: OutlookSender })),
-      ...smtps.map(s => ({ id: s.id, type: 'smtp', email: s.email, model: SmtpSender })),
-    ];
+        log("INFO", `Enqueuing batch of ${mailboxes.length} ${type} mailboxes for rescue check`);
 
-    if (allToEnqueue.length === 0) {
-        log("INFO", "📭 No mailboxes due for warmup monitor check");
-        return;
-    }
-
-    log("INFO", `Enqueuing ${allToEnqueue.length} mailboxes for warmup rescue check`);
-
-    for (const item of allToEnqueue) {
-        // 1. Mark as "Checked" immediately to prevent re-fetch in next producer tick
-        await item.model.update(
+        for (const item of mailboxes) {
+          // 1. Mark as "Checked" immediately 
+          await model.update(
             { lastWarmupRescueAt: DateTime.now().toJSDate() },
             { where: { id: item.id } }
-        );
+          );
 
-        // 2. Push to Queue
-        channel.sendToQueue(QUEUES.WARMUP_RESCUE, Buffer.from(JSON.stringify({
-            senderId: item.id,
-            senderType: item.type,
-            email: item.email
-        })), { persistent: true });
+          // 2. Push to Queue
+          channel.sendToQueue(
+            QUEUES.WARMUP_RESCUE,
+            Buffer.from(
+              JSON.stringify({
+                senderId: item.id,
+                senderType: type,
+                email: item.email,
+              })
+            ),
+            { persistent: true }
+          );
+        }
+
+        offset += BATCH_SIZE;
+      }
     }
 
-    log("INFO", "✅ Enqueued all due mailbox checks");
+    log("INFO", "✅ Warmup monitoring producer tick completed");
   } catch (err) {
     log("ERROR", "❌ Warmup monitoring producer failed", { error: err.message });
   }
 }
 
-// Tick every 5 minutes (more aggressive but handles batches of 100)
 const PRODUCER_INTERVAL = 5 * 60 * 1000;
-log("INFO", "🚀 Warmup Monitoring Producer booted");
-runMonitorProducerTick();
-setInterval(runMonitorProducerTick, PRODUCER_INTERVAL);
+
+async function boot() {
+  try {
+    log("INFO", "🚀 Warmup Monitoring Producer booted");
+    await runMonitorProducerTick();
+    setInterval(async () => {
+        try {
+            await runMonitorProducerTick();
+        } catch (err) {
+            log("ERROR", "Interval tick failed", { error: err.message });
+        }
+    }, PRODUCER_INTERVAL);
+  } catch (err) {
+    log("ERROR", "Worker boot failed, retrying in 10s", { error: err.message });
+    setTimeout(boot, 10000);
+  }
+}
+
+boot();

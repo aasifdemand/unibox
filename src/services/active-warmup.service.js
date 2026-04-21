@@ -95,6 +95,12 @@ const FALLBACK_CONTENT = [
   }
 ];
 
+const FALLBACK_TARGETS = [
+  { email: "warmup-relay-1@unibox.ai", displayName: "Unibox Relay Alpha" },
+  { email: "warmup-relay-2@unibox.ai", displayName: "Unibox Relay Beta" },
+  { email: "warmup-relay-3@unibox.ai", displayName: "Unibox Relay Gamma" }
+];
+
 const FALLBACK_REPLIES = [
   "Thanks for the update, sounds good!",
   "I'll check this and get back to you soon.",
@@ -271,13 +277,16 @@ class ActiveWarmupService {
       return picked;
     }
 
-    return null;
+    // 4. Universal Fallback (Ensures workers 'fire' even for single-account setups)
+    const picked = FALLBACK_TARGETS[Math.floor(Math.random() * FALLBACK_TARGETS.length)];
+    console.log(`[Warmup] No other accounts found. Using Universal Pool: ${picked.email}`);
+    return { ...picked, id: "system-fallback", type: "smtp" };
   }
 
   /**
    * Orchestrates a single warmup send.
    */
-  async triggerWarmupSend(sender) {
+  async triggerWarmupSend(sender, senderType) {
     const target = await this.pickTarget(sender);
     if (!target) return;
 
@@ -312,13 +321,13 @@ class ActiveWarmupService {
 
     // We reuse the existing EMAIL_SEND queue but with 
     // a 'warmup' flag in metadata to avoid stats corruption
-    const determinedType = sender.type || 
-      (sender.model?.constructor?.name === "OutlookSender" || sender.constructor?.name === "OutlookSender" ? "outlook" : 
-       sender.model?.constructor?.name === "GmailSender" || sender.constructor?.name === "GmailSender" ? "gmail" : "smtp");
+    const finalType = senderType || 
+      (sender.constructor.name === "OutlookSender" ? "outlook" :
+       sender.constructor.name === "GmailSender" ? "gmail" : "smtp");
 
     channel.sendToQueue(QUEUES.EMAIL_SEND, Buffer.from(JSON.stringify({
       senderId: sender.id,
-      senderType: determinedType,
+      senderType: finalType,
       recipientEmail: target.email,
       subject,
       htmlBody,
@@ -340,7 +349,7 @@ class ActiveWarmupService {
       status: "sent"
     });
 
-    console.log(`[Warmup] Queued warmup from ${sender.email} to ${target.email}`);
+    console.log(`[Warmup] Queued warmup from ${sender.email} to ${target.email} [Type: ${finalType}]`);
   }
 
   /**

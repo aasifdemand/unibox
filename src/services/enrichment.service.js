@@ -32,9 +32,9 @@ const enrichWithApollo = async (apiKey, email) => {
     headers: {
       "Content-Type": "application/json",
       "Cache-Control": "no-cache",
+      "X-Api-Key": apiKey,
     },
     body: JSON.stringify({
-      api_key: apiKey,
       email,
       reveal_personal_emails: false,
     }),
@@ -43,7 +43,12 @@ const enrichWithApollo = async (apiKey, email) => {
   if (response.status === 429) throw new Error("Apollo rate limit reached. Please wait and try again.");
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Apollo API error: ${response.status} - ${text}`);
+    let errorMessage = text;
+    try {
+      const json = JSON.parse(text);
+      errorMessage = json.error || json.message || text;
+    } catch (e) { /* use raw text */ }
+    throw new Error(`Apollo: ${errorMessage}`);
   }
 
   const data = await response.json();
@@ -83,7 +88,14 @@ const enrichWithLeadmagic = async (apiKey, email) => {
   if (response.status === 402) throw new Error("Leadmagic: Insufficient credits. Add credits at app.leadmagic.io/billing.");
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Leadmagic API error: ${response.status} - ${text}`);
+    let errorMessage = text;
+    try {
+      const json = JSON.parse(text);
+      errorMessage = json.error || json.message || text;
+    } catch (e) { /* use raw text */ }
+
+
+    throw new Error(`Leadmagic: ${errorMessage},`);
   }
 
   const data = await response.json();
