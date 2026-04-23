@@ -23,6 +23,7 @@ import Integration from "./integration.model.js";
 import MailboxFolder from "./mailbox-folder.model.js";
 import MailboxMessage from "./mailbox-message.model.js";
 import WarmupMessage from "./warmup-message.model.js";
+import WarmupContentPool from "./warmup-content-pool.model.js";
 import { INDICES, upsertDocument, deleteDocument } from "../services/elasticsearch.service.js";
 import { getRabbitChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
@@ -626,5 +627,6 @@ export {
   MailboxFolder,
   MailboxMessage,
   WarmupMessage,
+  WarmupContentPool,
 };
 

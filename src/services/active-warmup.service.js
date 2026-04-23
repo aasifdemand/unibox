@@ -1,4 +1,4 @@
-import { SmtpSender, GmailSender, OutlookSender, WarmupMessage } from "../models/index.js";
+import { SmtpSender, GmailSender, OutlookSender, WarmupMessage, WarmupContentPool } from "../models/index.js";
 import { refreshGoogleToken } from "../utils/refresh-google-token.js";
 import { getValidMicrosoftToken } from "../utils/get-valid-microsoft-token.js";
 import { createImapConnection } from "../utils/imap-helper.js";
@@ -113,7 +113,21 @@ class ActiveWarmupService {
   /**
    * Generates benign, human-looking email content using AI.
    */
-  async generateWarmupContent() {
+  async generateWarmupContent(forceAi = false) {
+    if (!forceAi) {
+      // 1. Try to pull from the pre-generated pool
+      const pooled = await WarmupContentPool.findOne({
+        where: { isUsed: false, type: "email" },
+        order: [sequelize.fn("RANDOM")] // Or just take the oldest
+      });
+
+      if (pooled) {
+        await pooled.update({ isUsed: true, usedAt: new Date() });
+        return { subject: pooled.subject, body: pooled.body };
+      }
+      console.warn("[Warmup] Content Pool EMPTY. Falling back to Live AI Generation.");
+    }
+
     const prompt = `Generate a short, professional, and very casual email between two colleagues or acquaintances.
     Topics could be: weather, weekend plans, a quick question about a generic tech topic, or a follow-up on an imaginary non-sales meeting.
     
@@ -145,7 +159,20 @@ class ActiveWarmupService {
   /**
    * Generates a short, benign reply to a warmup email.
    */
-  async generateWarmupReply(originalSubject, originalBody) {
+  async generateWarmupReply(originalSubject, originalBody, forceAi = false) {
+    if (!forceAi) {
+      const pooled = await WarmupContentPool.findOne({
+        where: { isUsed: false, type: "reply" },
+        order: [sequelize.fn("RANDOM")]
+      });
+
+      if (pooled) {
+        await pooled.update({ isUsed: true, usedAt: new Date() });
+        return pooled.body;
+      }
+      console.warn("[Warmup] Reply Pool EMPTY. Falling back to Live AI Generation.");
+    }
+
     const prompt = `You are a professional colleague. I will give you a short email subject and body. 
     Generate a very short, casual reply (1 sentence).
     Examples: "Thanks for letting me know!", "Sounds great, looking forward to it.", "I'll check this and get back to you soon."

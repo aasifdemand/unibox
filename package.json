@@ -22,6 +22,7 @@
     "ai-classifier": "node src/workers/ai-classifier.worker.js",
     "maintenance": "node src/workers/maintenance.worker.js",
     "crm-sync": "node src/workers/crm-sync.worker.js",
+    "warmup-generator" : "node src/workers/warmup-content-pregenerator.worker.js",
     "lint": "eslint . --max-warnings=0",
     "lint:fix": "eslint . --fix"
   },
