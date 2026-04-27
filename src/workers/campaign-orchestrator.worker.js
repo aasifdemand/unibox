@@ -105,9 +105,10 @@ async function startWorker() {
         }
 
         const { campaignId, recipientId } = payload;
+        const campaign = await Campaign.findByPk(campaignId);
+        const tz = campaign?.timezone || "UTC";
         log("INFO", "📥 Received campaign send task", { campaignId, recipientId });
 
-        const campaign = await Campaign.findByPk(campaignId);
         const recipient = await CampaignRecipient.findByPk(recipientId);
 
         if (!campaign || campaign.status !== "running" || !recipient || recipient.status !== "pending") {
@@ -188,7 +189,7 @@ async function startWorker() {
 
           if (!conditionMet) {
             log("DEBUG", "⏭️ Step condition not met. Skipping to next step.", { stepOrder, condition: stepConfig.condition });
-            await recipient.update({ currentStep: stepOrder + 1, nextRunAt: DateTime.now().toUTC().toJSDate() });
+            await recipient.update({ currentStep: stepOrder + 1, nextRunAt: DateTime.now().setZone(tz).toJSDate() });
             channel.sendToQueue(QUEUES.CAMPAIGN_SEND, Buffer.from(JSON.stringify({ campaignId, recipientId })));
             return channel.ack(msg);
           }
@@ -339,13 +340,13 @@ async function startWorker() {
           const nextStep = stepConfig.onConditionStepOrder || stepOrder + 1;
           const nextStepConfig = await CampaignStep.findOne({ where: { campaignId, stepOrder: nextStep }, transaction: t });
 
-          const now = DateTime.now().toUTC().toJSDate();
+          const now = DateTime.now().setZone(tz).toJSDate();
           if (nextStepConfig) {
             await recipient.update({
               status: "pending", 
               currentStep: nextStep, 
               lastSentAt: now,
-              nextRunAt: DateTime.now().toUTC().plus({ minutes: nextStepConfig.delayMinutes || 0 }).toJSDate()
+              nextRunAt: DateTime.now().setZone(tz).plus({ minutes: nextStepConfig.delayMinutes || 0 }).toJSDate()
             }, { transaction: t });
           } else {
             await recipient.update({ status: "completed", currentStep: nextStep, lastSentAt: now, nextRunAt: null }, { transaction: t });

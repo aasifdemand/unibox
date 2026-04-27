@@ -34,12 +34,13 @@ const limit = pLimit(20); // Process 20 campaigns in parallel
 
   const processCampaign = async (campaign) => {
     try {
-      const nowUtc = DateTime.now().toUTC();
+      const tz = campaign.timezone || "UTC";
+      const now = DateTime.now().setZone(tz);
 
       // 1. Status Activation Check
       if (campaign.status === "scheduled") {
-        const scheduledAt = DateTime.fromJSDate(campaign.scheduledAt).toUTC();
-        if (nowUtc >= scheduledAt) {
+        const scheduledAt = DateTime.fromJSDate(campaign.scheduledAt).setZone(tz);
+        if (now >= scheduledAt) {
           await campaign.update({
             status: "running",
             startedAt: DateTime.now().toJSDate()
@@ -51,8 +52,7 @@ const limit = pLimit(20); // Process 20 campaigns in parallel
       if (campaign.status !== "running") return;
 
       // 2. Sending Window Check
-      const tz = campaign.timezone || "UTC";
-      const nowTz = DateTime.now().setZone(tz);
+      const nowTz = now;
       const dayName = nowTz.toFormat("EEEE").toLowerCase();
       const currentTime = nowTz.toFormat("HH:mm");
 
@@ -83,7 +83,7 @@ const limit = pLimit(20); // Process 20 campaigns in parallel
       const health = await DeliveryGuard.canSendToday(sender);
       if (!health.allowed) return;
 
-      const startOfDay = DateTime.now().setZone(tz).startOf('day').toUTC().toJSDate();
+      const startOfDay = now.startOf('day').toJSDate();
       
       // 🚀 FIX: Only count NEW leads (Step 0) for the maxLeadsPerDay limit.
       // Follow-ups should be allowed to proceed as long as the sender has daily capacity.
@@ -107,7 +107,7 @@ const limit = pLimit(20); // Process 20 campaigns in parallel
         where: {
           campaignId: campaign.id,
           status: "pending",
-          nextRunAt: { [Op.or]: [{ [Op.lte]: DateTime.now().toUTC().toJSDate() }, { [Op.is]: null }] },
+          nextRunAt: { [Op.or]: [{ [Op.lte]: now.toJSDate() }, { [Op.is]: null }] },
         },
         include: [{ model: GlobalEmailRegistry, required: false, attributes: ["unsubscribed"] }],
         // 🚀 PRIORITIZE FOLLOW-UPS: Order by currentStep DESC so people further in the funnel go first
@@ -150,7 +150,7 @@ const limit = pLimit(20); // Process 20 campaigns in parallel
 
         // 5b. Short safety lease (2 mins) while orchestrator processes. 
         // Using UTC for consistency.
-        await r.update({ nextRunAt: DateTime.now().toUTC().plus({ minutes: 2 }).toJSDate() });
+        await r.update({ nextRunAt: now.plus({ minutes: 2 }).toJSDate() });
         enqueuedCount++;
       }
     } catch (campaignErr) {

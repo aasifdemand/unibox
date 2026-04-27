@@ -299,53 +299,71 @@ class MailboxSyncService {
   }
 
   async syncOutlookMessages(sender, folder) {
-    const token = await getValidMicrosoftToken(sender);
-    if (!token) return;
+    try {
+      const token = await getValidMicrosoftToken(sender);
+      if (!token) return;
 
-    console.log(`[MailboxSync] Fetching recent messages for Outlook folder: ${folder.name}`);
-    const sixMonthsAgo = DateTime.now().minus({ days: 180 }).toISO();
-    let nextLink = `https://graph.microsoft.com/v1.0/me/mailFolders/${folder.providerFolderId}/messages?$top=100&$select=id,subject,from,toRecipients,receivedDateTime,isRead,bodyPreview,conversationId&$filter=receivedDateTime ge ${sixMonthsAgo}`;
-    let processedCount = 0;
-    const MAX_SYNC = 300; // Expanded limit for better initial sync experience
+      console.log(`[MailboxSync] Fetching recent messages for Outlook folder: ${folder.name}`);
+      
+      // Standard Graph API date format: YYYY-MM-DDTHH:MM:SSZ (No milliseconds for better compatibility)
+      const sixMonthsAgo = DateTime.now().toUTC().minus({ days: 180 }).toFormat("yyyy-MM-dd'T'HH:mm:ss'Z'");
+      
+      // Use the base URL; params will be handled by axios
+      let nextLink = `https://graph.microsoft.com/v1.0/me/mailFolders/${encodeURIComponent(folder.providerFolderId)}/messages`;
+      let params = {
+        $top: 100,
+        $select: 'id,subject,from,toRecipients,receivedDateTime,isRead,bodyPreview,conversationId',
+        $filter: `receivedDateTime ge ${sixMonthsAgo}`
+      };
 
-    while (nextLink && processedCount < MAX_SYNC) {
-      const response = await axios.get(nextLink, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      let processedCount = 0;
+      const MAX_SYNC = 300; 
 
-      const messages = response.data.value || [];
-      for (const msg of messages) {
-        const fromEmail = msg.from?.emailAddress?.address || "";
-        const isLead = await this.checkIfLead(fromEmail);
-
-        await MailboxMessage.upsert({
-          userId: sender.userId,
-          senderId: sender.id,
-          senderType: 'outlook',
-          folderId: folder.id,
-          providerMessageId: msg.id,
-          providerThreadId: msg.conversationId,
-          subject: msg.subject || "",
-          from: fromEmail,
-          to: msg.toRecipients?.map(r => r.emailAddress?.address).join(", ") || "",
-          date: DateTime.fromISO(msg.receivedDateTime).toJSDate(),
-          snippet: msg.bodyPreview || "",
-          isRead: msg.isRead,
-          isLead: isLead,
-          isNoise: !isLead && ['spam', 'trash'].includes(folder.folderType)
+      while (nextLink && processedCount < MAX_SYNC) {
+        const response = await axios.get(nextLink, {
+          headers: { Authorization: `Bearer ${token}` },
+          params: params || undefined
         });
-        processedCount++;
+
+        // Clear params after first page since nextLink already contains them
+        params = null;
+
+        const messages = response.data.value || [];
+        for (const msg of messages) {
+          const fromEmail = msg.from?.emailAddress?.address || "";
+          const isLead = await this.checkIfLead(fromEmail);
+
+          await MailboxMessage.upsert({
+            userId: sender.userId,
+            senderId: sender.id,
+            senderType: 'outlook',
+            folderId: folder.id,
+            providerMessageId: msg.id,
+            providerThreadId: msg.conversationId,
+            subject: msg.subject || "",
+            from: fromEmail,
+            to: msg.toRecipients?.map(r => r.emailAddress?.address).join(", ") || "",
+            date: DateTime.fromISO(msg.receivedDateTime).toJSDate(),
+            snippet: msg.bodyPreview || "",
+            isRead: msg.isRead,
+            isLead: isLead,
+            isNoise: !isLead && ['spam', 'trash'].includes(folder.folderType)
+          });
+          processedCount++;
+        }
+
+        nextLink = response.data['@odata.nextLink'];
       }
 
-      // Record next link if it exists
-      nextLink = response.data['@odata.nextLink'];
-    }
+      console.log(`[MailboxSync] Synced ${processedCount} messages for Outlook folder: ${folder.name}`);
 
-    console.log(`[MailboxSync] Synced ${processedCount} messages for Outlook folder: ${folder.name}`);
-
-    // Update folder sync timestamp
-    if (folder.update) {
-      await folder.update({ lastSyncAt: DateTime.now().toJSDate() });
+      if (folder.update) {
+        await folder.update({ lastSyncAt: DateTime.now().toJSDate() });
+      }
+    } catch (err) {
+      const details = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      console.error(`[MailboxSync] Error syncing Outlook folder ${folder.name} for ${sender.email}:`, details);
+      throw err;
     }
   }
 
