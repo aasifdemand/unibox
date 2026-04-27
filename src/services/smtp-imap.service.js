@@ -11,7 +11,13 @@ export const verifySmtp = async ({ host, port, secure, user, password, proxy = n
       port: parseInt(port),
       secure,
       auth: { user, pass: password },
-      tls: { rejectUnauthorized: false },
+      tls: { 
+        rejectUnauthorized: false,
+        servername: host,
+        minVersion: "TLSv1",
+        ciphers: "ALL", // Allow all available ciphers
+      },
+      requireTLS: port === 587, // Force STARTTLS on port 587
     };
 
     if (proxy) {
@@ -43,7 +49,11 @@ export const verifyImap = async ({ host, port, secure, user, password, proxy = n
       host,
       port: parseInt(port),
       tls: secure,
-      tlsOptions: { rejectUnauthorized: false },
+      tlsOptions: { 
+        rejectUnauthorized: false,
+        servername: host,
+        minVersion: "TLSv1"
+      },
       authTimeout: 10000,
       connTimeout: 10000,
     };

@@ -45,7 +45,7 @@ export const initSocket = async (httpServer) => {
         }
 
         try {
-            const decoded = jwt.verify(token, process.env.JWT_SECRET);
+            const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
             socket.user = decoded; // Contains id, email, role, etc.
             next();
         } catch (err) {

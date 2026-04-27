@@ -128,8 +128,14 @@ class ActiveWarmupService {
       console.warn("[Warmup] Content Pool EMPTY. Falling back to Live AI Generation.");
     }
 
-    const prompt = `Generate a short, professional, and very casual email between two colleagues or acquaintances.
-    Topics could be: weather, weekend plans, a quick question about a generic tech topic, or a follow-up on an imaginary non-sales meeting.
+    const themes = [
+      "coffee catch-up", "weekend plans", "generic tech question", "meeting follow-up",
+      "project documentation", "office temperature", "lunch recommendation", "commute",
+      "article recommendation", "upcoming holiday", "software update", "team sync"
+    ];
+    const randomTheme = themes[Math.floor(Math.random() * themes.length)];
+
+    const prompt = `Generate a short, professional, and very casual email between two colleagues or acquaintances about ${randomTheme}.
     
     Guidelines:
     - Subject must be short (2-4 words).
@@ -137,6 +143,7 @@ class ActiveWarmupService {
     - NO links, NO sales pitch, NO attachments.
     - Use a friendly but professional tone.
     - DO NOT include a sign-off or signature in the body (I will add it manually).
+    - Be creative and avoid repetitive phrases.
     
     Output format: JSON object {"subject": "...", "body": "..."}`;
 
@@ -149,9 +156,15 @@ class ActiveWarmupService {
       });
 
       const content = JSON.parse(response.data.response);
+      
+      // Validation: Ensure the AI provided the expected fields
+      if (!content.subject || !content.body) {
+        throw new Error("AI response missing subject or body");
+      }
+
       return content;
     } catch (error) {
-      console.error("Warmup AI Content Generation Failed, using fallback:", error.message);
+      console.error("Warmup AI Content Generation Failed or Invalid, using fallback:", error.message);
       return FALLBACK_CONTENT[Math.floor(Math.random() * FALLBACK_CONTENT.length)];
     }
   }
@@ -180,6 +193,11 @@ class ActiveWarmupService {
     Original Subject: ${originalSubject}
     Original Body: ${originalBody}
     
+    Guidelines:
+    - Be creative and use varied language.
+    - Do not always use the same opening or closing.
+    - Maintain a friendly, professional, but very brief tone.
+
     Output format: JSON object {"body": "..."}`;
 
     try {
@@ -191,9 +209,15 @@ class ActiveWarmupService {
       });
 
       const content = JSON.parse(response.data.response);
+      
+      // Validation: Ensure the AI provided the body
+      if (!content.body) {
+        throw new Error("AI reply response missing body");
+      }
+
       return content.body;
     } catch (error) {
-      console.error("Warmup AI Reply Generation Failed, using fallback:", error.message);
+      console.error("Warmup AI Reply Generation Failed or Invalid, using fallback:", error.message);
       return FALLBACK_REPLIES[Math.floor(Math.random() * FALLBACK_REPLIES.length)];
     }
   }
