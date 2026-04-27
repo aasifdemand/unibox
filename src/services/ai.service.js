@@ -21,6 +21,8 @@ const extractJson = (text) => {
     // 1. Try direct parse
     return JSON.parse(text);
   } catch (e) {
+    console.log(e);
+
     // 2. Try to find anything between [ ] or { }
     const bracketMatch = text.match(/\[[\s\S]*\]/) || text.match(/\{[\s\S]*\}/);
     if (bracketMatch) {
@@ -37,7 +39,7 @@ const extractJson = (text) => {
     try {
       return JSON.parse(stripped);
     } catch (inner) {
-       console.error("Last ditch parse failed:", inner.message);
+      console.error("Last ditch parse failed:", inner.message);
     }
 
     console.error("Raw AI Response that failed parsing:", text);
@@ -75,7 +77,7 @@ const callOllama = async (prompt, jsonMode = false) => {
 export const generateSequence = async (goal, tone = "professional", stepsCount = 3, variables = []) => {
   // Incremented version to v3 to invalidate old incompatible cached sequences
   const cacheKey = `ai:seq:v3:${Buffer.from(`${goal}:${tone}:${stepsCount}`).toString("base64")}`;
-  
+
   try {
     const cached = await redis.get(cacheKey);
     if (cached) {
@@ -109,7 +111,7 @@ Example Output:
     console.log(`🚀 Generating sequence (${OLLAMA_MODEL})...`);
     const text = await callOllama(prompt, true);
     const result = extractJson(text);
-    
+
     // Cache for 24 hours
     await redis.set(cacheKey, JSON.stringify(result), "EX", 86400);
     return result;
@@ -171,7 +173,7 @@ Constraints:
 
   try {
     console.log(`Streaming sequence generation with Ollama (${OLLAMA_MODEL}) - Steps: ${stepsCount}...`);
-    
+
     const response = await axios.post(`${OLLAMA_BASE_URL}/api/generate`, {
       model: OLLAMA_MODEL,
       prompt: prompt,

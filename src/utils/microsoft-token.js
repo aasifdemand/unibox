@@ -1,5 +1,5 @@
 import axios from "axios";
-import Sender from "../models/sender.model.js";
+
 
 
 export const getValidMicrosoftToken = async (sender) => {

@@ -93,7 +93,7 @@ const enrichWithLeadmagic = async (apiKey, email) => {
       const json = JSON.parse(text);
       errorMessage = json.error || json.message || text;
     } catch (e) { /* use raw text */ }
-
+    console.log();
 
     throw new Error(`Leadmagic: ${errorMessage},`);
   }

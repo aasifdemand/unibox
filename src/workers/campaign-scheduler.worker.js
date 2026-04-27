@@ -3,6 +3,7 @@ import { initGlobalErrorHandlers } from "../utils/error-handler.js";
 initGlobalErrorHandlers();
 import Campaign from "../models/campaign.model.js";
 import CampaignRecipient from "../models/campaign-recipient.model.js";
+import CampaignSend from "../models/campaign-send.model.js";
 import GlobalEmailRegistry from "../models/global-email-registry.model.js";
 import { getRabbitChannel as getChannel } from "../queues/rabbit.js";
 import { QUEUES } from "../queues/queues.js";
@@ -83,29 +84,38 @@ const limit = pLimit(20); // Process 20 campaigns in parallel
       if (!health.allowed) return;
 
       const startOfDay = DateTime.now().setZone(tz).startOf('day').toUTC().toJSDate();
-      const sentTodayCount = await CampaignRecipient.count({
+      
+      // 🚀 FIX: Only count NEW leads (Step 0) for the maxLeadsPerDay limit.
+      // Follow-ups should be allowed to proceed as long as the sender has daily capacity.
+      const newLeadsSentToday = await CampaignSend.count({
         where: {
           campaignId: campaign.id,
-          lastSentAt: { [Op.gte]: startOfDay },
-        },
+          step: 0,
+          sentAt: { [Op.gte]: startOfDay }
+        }
       });
 
-      const maxPerDay = campaign.maxLeadsPerDay || 100;
-      const remainingToday = Math.max(0, maxPerDay - sentTodayCount);
-      if (remainingToday === 0) return;
+      const maxNewLeadsPerDay = campaign.maxLeadsPerDay || 100;
+      let remainingNewLeadsQuota = Math.max(0, maxNewLeadsPerDay - newLeadsSentToday);
 
       // 4. Batch Selection
-      const batchSize = Math.min(campaign.throttlePerMinute || 1, health.remaining, remainingToday);
+      // We don't limit the initial fetch by remainingNewLeadsQuota because we want to pick up follow-ups too!
+      const batchSize = Math.min(campaign.throttlePerMinute || 1, health.remaining);
+      if (batchSize <= 0) return;
 
       const recipients = await CampaignRecipient.findAll({
         where: {
           campaignId: campaign.id,
           status: "pending",
-          nextRunAt: { [Op.or]: [{ [Op.lte]: DateTime.now().toJSDate() }, { [Op.is]: null }] },
+          nextRunAt: { [Op.or]: [{ [Op.lte]: DateTime.now().toUTC().toJSDate() }, { [Op.is]: null }] },
         },
         include: [{ model: GlobalEmailRegistry, required: false, attributes: ["unsubscribed"] }],
-        order: [["nextRunAt", "ASC"]],
-        limit: batchSize,
+        // 🚀 PRIORITIZE FOLLOW-UPS: Order by currentStep DESC so people further in the funnel go first
+        order: [
+          ["currentStep", "DESC"],
+          ["nextRunAt", "ASC"]
+        ],
+        limit: Math.max(batchSize, 50), // Fetch a bit more to account for quota filtering
       });
 
       if (recipients.length === 0) return;
@@ -113,10 +123,21 @@ const limit = pLimit(20); // Process 20 campaigns in parallel
       log("DEBUG", "📤 Batching recipients", {
         campaignId: campaign.id,
         count: recipients.length,
+        remainingNewLeadsQuota,
+        totalSenderRemaining: health.remaining
       });
 
       // 5. Enqueue tasks
+      let enqueuedCount = 0;
       for (const r of recipients) {
+        if (enqueuedCount >= batchSize) break;
+
+        // Apply maxLeadsPerDay ONLY to new leads (Step 0)
+        if (r.currentStep === 0) {
+          if (remainingNewLeadsQuota <= 0) continue;
+          remainingNewLeadsQuota--;
+        }
+
         if (r.GlobalEmailRegistry?.unsubscribed) {
           await r.update({ status: "unsubscribed", nextRunAt: null });
           continue;
@@ -128,8 +149,9 @@ const limit = pLimit(20); // Process 20 campaigns in parallel
         })), { persistent: true });
 
         // 5b. Short safety lease (2 mins) while orchestrator processes. 
-        // The orchestrator will set the final nextRunAt once successful.
+        // Using UTC for consistency.
         await r.update({ nextRunAt: DateTime.now().toUTC().plus({ minutes: 2 }).toJSDate() });
+        enqueuedCount++;
       }
     } catch (campaignErr) {
       log("ERROR", "❌ Error processing campaign", {

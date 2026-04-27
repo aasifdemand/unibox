@@ -1,5 +1,5 @@
 import { Integration } from "../models/index.js";
-import { encrypt, decrypt } from "../utils/encryption.js";
+import { encrypt } from "../utils/encryption.js";
 import { getOAuthUrl, handleOAuthCallback } from "../services/integration.service.js";
 
 /**
@@ -128,7 +128,7 @@ export const oauthRedirect = async (req, res) => {
   try {
     const { service } = req.params;
     const userId = req.user.id;
-    
+
     const url = getOAuthUrl(service, userId);
     // Unibox frontend opens this in the same tab or new window, so redirecting is correct
     // But since the frontend uses React, it's better if frontend redirects directly. We will simply redirect.

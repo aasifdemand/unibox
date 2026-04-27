@@ -1,4 +1,4 @@
-export default function errorHandler(err, req, res, next) {
+export default function errorHandler(err, req, res) {
   console.error("💥 Error:", err);
 
   const statusCode = err.statusCode || 500;

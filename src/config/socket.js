@@ -49,6 +49,7 @@ export const initSocket = async (httpServer) => {
             socket.user = decoded; // Contains id, email, role, etc.
             next();
         } catch (err) {
+            console.log("error: ", err);
             return next(new Error("Authentication error: Invalid token"));
         }
     });

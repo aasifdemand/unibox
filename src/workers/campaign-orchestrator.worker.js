@@ -188,7 +188,7 @@ async function startWorker() {
 
           if (!conditionMet) {
             log("DEBUG", "⏭️ Step condition not met. Skipping to next step.", { stepOrder, condition: stepConfig.condition });
-            await recipient.update({ currentStep: stepOrder + 1, nextRunAt: DateTime.now().toJSDate() });
+            await recipient.update({ currentStep: stepOrder + 1, nextRunAt: DateTime.now().toUTC().toJSDate() });
             channel.sendToQueue(QUEUES.CAMPAIGN_SEND, Buffer.from(JSON.stringify({ campaignId, recipientId })));
             return channel.ack(msg);
           }
@@ -246,7 +246,7 @@ async function startWorker() {
             const tomorrow = DateTime.now().setZone(campaign.timezone || "UTC").plus({ days: 1 }).set({
               hour: parseInt((campaign.startTime || "09:00").split(":")[0]),
               minute: parseInt((campaign.startTime || "09:00").split(":")[1])
-            }).toJSDate();
+            }).toUTC().toJSDate();
 
             log("INFO", "⏳ All senders hit daily limits. Rescheduling for tomorrow.", { campaignId, senders: quotaReachedSenders.map(s => s.email) });
             await recipient.update({ nextRunAt: tomorrow });
@@ -339,13 +339,16 @@ async function startWorker() {
           const nextStep = stepConfig.onConditionStepOrder || stepOrder + 1;
           const nextStepConfig = await CampaignStep.findOne({ where: { campaignId, stepOrder: nextStep }, transaction: t });
 
+          const now = DateTime.now().toUTC().toJSDate();
           if (nextStepConfig) {
             await recipient.update({
-              status: "pending", currentStep: nextStep, lastSentAt: DateTime.now().toJSDate(),
-              nextRunAt: DateTime.now().plus({ minutes: nextStepConfig.delayMinutes || 0 }).toJSDate()
+              status: "pending", 
+              currentStep: nextStep, 
+              lastSentAt: now,
+              nextRunAt: DateTime.now().toUTC().plus({ minutes: nextStepConfig.delayMinutes || 0 }).toJSDate()
             }, { transaction: t });
           } else {
-            await recipient.update({ status: "completed", currentStep: nextStep, lastSentAt: DateTime.now().toJSDate(), nextRunAt: null }, { transaction: t });
+            await recipient.update({ status: "completed", currentStep: nextStep, lastSentAt: now, nextRunAt: null }, { transaction: t });
             await tryCompleteCampaign(campaignId, { transaction: t });
           }
 
