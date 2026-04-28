@@ -336,8 +336,16 @@ async function ingestOutlookReplies(sender) {
 
     // Tier 3 Map: Subject (normalized) + Recipient
     const normalizedSubject = (e.subject || "").toLowerCase().replace(/^re:\s*/i, "").trim();
-    if (normalizedSubject && e.recipientEmail) {
-      subjectRecipientMap.set(`${normalizedSubject}|${e.recipientEmail.toLowerCase()}`, e);
+    if (normalizedSubject) {
+      if (e.recipientEmail) {
+        subjectRecipientMap.set(`${normalizedSubject}|${e.recipientEmail.toLowerCase()}`, e);
+      }
+      
+      // Tier 4 Map: Subject Only (Fallback)
+      if (!subjectRecipientMap.has(normalizedSubject)) {
+        subjectRecipientMap.set(normalizedSubject, []);
+      }
+      subjectRecipientMap.get(normalizedSubject).push(e);
     }
   });
 
@@ -352,7 +360,7 @@ async function ingestOutlookReplies(sender) {
   for (const folder of folders) {
     try {
       const folderRes = await axios.get(
-        `https://graph.microsoft.com/v1.0/me/mailFolders/${folder}/messages?$top=100&$select=id,conversationId,subject,from,receivedDateTime,internetMessageId,parentFolderId,body,bodyPreview&$orderby=receivedDateTime desc`,
+        `https://graph.microsoft.com/v1.0/me/mailFolders/${folder}/messages?$top=250&$select=id,conversationId,subject,from,receivedDateTime,internetMessageId,parentFolderId,body,bodyPreview&$orderby=receivedDateTime desc`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       if (folderRes.data.value) {
@@ -406,6 +414,19 @@ async function ingestOutlookReplies(sender) {
           normalizedSubject,
           from
         });
+      } else {
+        // TIER 4: Fallback - Subject Only Match
+        const subjectMatches = subjectRecipientMap.get(normalizedSubject);
+        if (subjectMatches && subjectMatches.length === 1) {
+          // Only safe to match if exactly ONE recipient got this exact subject in this campaign
+          matchedEmail = subjectMatches[0];
+          log("INFO", "⚓ Tier 4 Match (Subject Only) succeeded for Outlook", {
+            conversationId,
+            subject: msg.subject,
+            normalizedSubject,
+            from
+          });
+        }
       }
     }
 
