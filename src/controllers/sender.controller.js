@@ -32,12 +32,18 @@ export const createSender = asyncHandler(async (req, res) => {
     imapPort = 993,
     imapSecure = true,
     imapUser,
+    imapUsername,
     imapPassword,
     provider = "custom",
     dailyLimit = 500,
     hourlyLimit = 100,
     isSystemAccount = false,
   } = req.body;
+
+  // Resiliency: Accept both imapUser and imapUsername
+  const finalImapUser = imapUser || imapUsername || smtpUser;
+  const finalImapPassword = imapPassword || smtpPassword;
+  const finalImapHost = imapHost || (smtpHost ? smtpHost.replace("smtp", "imap") : null);
 
   if (!email || !displayName) {
     throw new AppError("Email and display name are required", 400);
@@ -47,7 +53,7 @@ export const createSender = asyncHandler(async (req, res) => {
     throw new AppError("Incomplete SMTP configuration", 400);
   }
 
-  if (!imapHost || !imapUser || !imapPassword) {
+  if (!finalImapHost || !finalImapUser || !finalImapPassword) {
     throw new AppError("Incomplete IMAP configuration", 400);
   }
 
@@ -83,11 +89,11 @@ export const createSender = asyncHandler(async (req, res) => {
   });
 
   await verifyImap({
-    host: imapHost,
+    host: finalImapHost,
     port: imapPort,
     secure: imapSecure,
-    user: imapUser,
-    password: imapPassword,
+    user: finalImapUser,
+    password: finalImapPassword,
     proxy: socksProxy,
   });
 
@@ -101,11 +107,11 @@ export const createSender = asyncHandler(async (req, res) => {
     smtpSecure,
     smtpUsername: smtpUser,
     smtpPassword,
-    imapHost,
+    imapHost: finalImapHost,
     imapPort,
     imapSecure,
-    imapUsername: imapUser,
-    imapPassword,
+    imapUsername: finalImapUser,
+    imapPassword: finalImapPassword,
     provider,
     dailyLimit,
     hourlyLimit,
@@ -159,9 +165,14 @@ export const bulkCreateSenders = asyncHandler(async (req, res) => {
         imapPort = 993,
         imapSecure = true,
         imapUser,
+        imapUsername,
         imapPassword,
         isSystemAccount = false,
       } = senderData;
+
+      const finalImapUser = imapUser || imapUsername || smtpUser;
+      const finalImapPassword = imapPassword || smtpPassword;
+      const finalImapHost = imapHost || (smtpHost ? smtpHost.replace("smtp", "imap") : null);
 
       if (!email || !displayName || !smtpHost || !smtpUser || !smtpPassword) {
         throw new Error(`Incomplete configuration for ${email || 'unknown'}`);
@@ -193,11 +204,11 @@ export const bulkCreateSenders = asyncHandler(async (req, res) => {
         smtpSecure,
         smtpUsername: smtpUser,
         smtpPassword,
-        imapHost: imapHost || smtpHost.replace("smtp", "imap"),
+        imapHost: finalImapHost,
         imapPort: imapPort || 993,
         imapSecure: imapSecure !== undefined ? imapSecure : true,
-        imapUsername: imapUser || smtpUser,
-        imapPassword: imapPassword || smtpPassword,
+        imapUsername: finalImapUser,
+        imapPassword: finalImapPassword,
         isVerified: true,
         isActive: true,
         isSystemAccount,
